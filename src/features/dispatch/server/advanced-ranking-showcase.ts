@@ -209,14 +209,14 @@ async function ensureScenarioSeeded() {
     update: {
       title: "Advanced Driver Ranking Showcase",
       explanation:
-        "This SQLite-backed showcase ranks seeded operational profiles using POI, POD, BOL, ELD, fuel, HOS, ETA, deadhead, and driver-performance signals from the same decision model used in the workstation.",
+        "This database-backed showcase ranks seeded operational profiles using POI, POD, BOL, ELD, fuel, HOS, ETA, deadhead, and driver-performance signals from the same decision model used in the workstation.",
       loadJson: JSON.stringify(showcaseLoad)
     },
     create: {
       id: SCENARIO_ID,
       title: "Advanced Driver Ranking Showcase",
       explanation:
-        "This SQLite-backed showcase ranks seeded operational profiles using POI, POD, BOL, ELD, fuel, HOS, ETA, deadhead, and driver-performance signals from the same decision model used in the workstation.",
+        "This database-backed showcase ranks seeded operational profiles using POI, POD, BOL, ELD, fuel, HOS, ETA, deadhead, and driver-performance signals from the same decision model used in the workstation.",
       loadJson: JSON.stringify(showcaseLoad)
     }
   });
