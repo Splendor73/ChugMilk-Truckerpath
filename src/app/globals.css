@@ -15,6 +15,11 @@
 }
 
 @layer base {
+  html {
+    color-scheme: light;
+    scroll-behavior: smooth;
+  }
+
   html,
   body {
     margin: 0;
@@ -23,7 +28,10 @@
   }
 
   body {
-    background: var(--color-shell-bg);
+    background:
+      radial-gradient(circle at top left, rgba(30, 78, 216, 0.09), transparent 32%),
+      radial-gradient(circle at 85% 0%, rgba(15, 118, 110, 0.06), transparent 28%),
+      linear-gradient(180deg, #f7f9fc 0%, #eef3f9 100%);
     color: var(--color-shell-text);
   }
 }
@@ -32,6 +40,7 @@
   .bg-shell {
     background:
       radial-gradient(circle at top left, rgba(30, 78, 216, 0.08), transparent 35%),
+      radial-gradient(circle at 82% 20%, rgba(15, 118, 110, 0.06), transparent 30%),
       linear-gradient(180deg, #f7f9fc 0%, #eef3f9 100%);
   }
 }

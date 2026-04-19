@@ -18,20 +18,24 @@ function formatHours(hours: number) {
   return `${hours.toFixed(hours % 1 === 0 ? 0 : 1)}h`;
 }
 
+function getAssignedLoadIdForDriver(driverId: string, loadAssignmentsById: Record<string, string | null>) {
+  return Object.entries(loadAssignmentsById).find(([, assignedDriverId]) => assignedDriverId === driverId)?.[0] ?? null;
+}
+
 export function MorningTriageScreen() {
-  const { assignedDriverId } = useMockData();
+  const { assignedDriverId, loadAssignmentsById } = useMockData();
 
   const viewModel = useMemo(() => {
     const selectedDriver = drivers.find((driver) => driver.id === assignedDriverId) ?? drivers[0];
-    const selectedLoad = selectedDriver.currentLoadId
-      ? loads.find((load) => load.id === selectedDriver.currentLoadId) ?? null
-      : null;
+    const assignedLoadId = getAssignedLoadIdForDriver(selectedDriver.id, loadAssignmentsById);
+    const selectedLoadId = assignedLoadId ?? selectedDriver.currentLoadId;
+    const selectedLoad = selectedLoadId ? loads.find((load) => load.id === selectedLoadId) ?? null : null;
     const criticalAlert = monitoring.find((item) => item.severity === "Critical") ?? monitoring[0];
     const watchAlert = monitoring.find((item) => item.severity === "Warning") ?? monitoring[1];
     const criticalDriver = drivers.find((driver) => driver.id === criticalAlert.driverId) ?? selectedDriver;
     const criticalLoad = loads.find((load) => load.id === criticalAlert.loadId) ?? selectedLoad ?? loads[0];
     const recommendedBackhaul = backhaul[0];
-    const activeLoads = loads.filter((load) => load.assignedDriverId !== null);
+    const activeLoads = loads.filter((load) => loadAssignmentsById[load.id] !== null);
     const readyDrivers = drivers.filter((driver) => driver.hoursRemaining >= 8);
     const openRiskCount = monitoring.filter((item) => item.severity !== "Watch").length;
     const averageScore = Math.round(
@@ -55,7 +59,7 @@ export function MorningTriageScreen() {
       averageScore,
       averageHours,
     };
-  }, [assignedDriverId]);
+  }, [assignedDriverId, loadAssignmentsById]);
 
   const fleetReadinessMetrics = [
     {

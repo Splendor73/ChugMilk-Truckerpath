@@ -141,7 +141,7 @@ function scoreDriver(
 }
 
 export function LoadAssignmentScreen() {
-  const { assignedDriverId, assignLoad, loadAssignmentsById } = useMockData();
+  const { assignedDriverId, assignDriver, assignLoad, loadAssignmentsById } = useMockData();
   const [assignmentMessage, setAssignmentMessage] = useState<string | null>(null);
 
   const viewModel = useMemo(() => {
@@ -169,8 +169,11 @@ export function LoadAssignmentScreen() {
   }, [assignedDriverId, loadAssignmentsById]);
 
   const handleAssign = () => {
+    assignDriver(viewModel.topCandidate.driver.id);
     assignLoad(viewModel.load.id, viewModel.topCandidate.driver.id);
-    setAssignmentMessage(`Assigned ${viewModel.topCandidate.driver.name} to ${viewModel.load.reference}.`);
+    setAssignmentMessage(
+      `Assigned ${viewModel.topCandidate.driver.name} to ${viewModel.load.reference} and updated the shared focus driver.`,
+    );
   };
 
   return (

@@ -11,7 +11,7 @@ export function TopBar({ currentWorkflow }: TopBarProps) {
   const topBarLinks = getShellTopBarWorkflows();
 
   return (
-    <header className="flex flex-col gap-4 border-b border-[color:var(--color-shell-border)] bg-[color:var(--color-shell-surface)] px-6 py-4 backdrop-blur">
+    <header className="sticky top-0 z-30 flex flex-col gap-4 border-b border-[color:var(--color-shell-border)] bg-[color:var(--color-shell-surface)]/96 px-4 py-4 backdrop-blur sm:px-6">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
           <div className="text-xs font-semibold uppercase tracking-[0.28em] text-[color:var(--color-shell-text-muted)]">
@@ -33,10 +33,10 @@ export function TopBar({ currentWorkflow }: TopBarProps) {
                   aria-current={active ? "page" : undefined}
                   href={workflow.href}
                   className={[
-                    "rounded-full px-4 py-2 text-sm font-medium transition-colors",
+                    "rounded-full border px-4 py-2 text-sm font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-shell-brand)] focus-visible:ring-offset-2 focus-visible:ring-offset-[color:var(--color-shell-surface)]",
                     active
-                      ? "bg-[color:var(--color-shell-brand-soft)] text-[color:var(--color-shell-brand)]"
-                      : "text-[color:var(--color-shell-text-muted)] hover:bg-[color:var(--color-shell-surface-muted)] hover:text-[color:var(--color-shell-text)]",
+                      ? "border-[color:var(--color-shell-brand)] bg-[color:var(--color-shell-brand-soft)] text-[color:var(--color-shell-brand)] shadow-[0_10px_24px_rgba(30,78,216,0.08)]"
+                      : "border-transparent text-[color:var(--color-shell-text-muted)] hover:border-[color:var(--color-shell-border)] hover:bg-[color:var(--color-shell-surface-muted)] hover:text-[color:var(--color-shell-text)]",
                   ].join(" ")}
                 >
                   {workflow.label}
@@ -48,7 +48,7 @@ export function TopBar({ currentWorkflow }: TopBarProps) {
 
           <button
             type="button"
-            className="rounded-full border border-[color:var(--color-shell-border)] px-4 py-2 text-sm font-semibold text-[color:var(--color-shell-text)]"
+            className="rounded-full border border-[color:var(--color-shell-border)] bg-[color:var(--color-shell-surface)] px-4 py-2 text-sm font-semibold text-[color:var(--color-shell-text)] transition-colors hover:bg-[color:var(--color-shell-surface-muted)]"
           >
             Go Live
           </button>
@@ -60,6 +60,7 @@ export function TopBar({ currentWorkflow }: TopBarProps) {
         <input
           type="search"
           placeholder="Search loads, drivers"
+          aria-label="Search loads and drivers"
           className="min-w-0 flex-1 border-0 bg-transparent p-0 text-sm text-[color:var(--color-shell-text)] outline-none placeholder:text-[color:var(--color-shell-text-muted)]"
         />
       </label>
