@@ -24,6 +24,8 @@ vi.mock("@/components/workstation/interactive-dispatch-map", () => ({
 }));
 
 describe.sequential("dispatch workstation form surface", () => {
+  let fetchCalls: Array<{ url: string; method: string; body?: string }>;
+
   beforeAll(async () => {
     await bootstrapBackendTests();
   });
@@ -46,6 +48,8 @@ describe.sequential("dispatch workstation form surface", () => {
       configurable: true
     });
 
+    fetchCalls = [];
+
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url =
         typeof input === "string"
@@ -61,9 +65,30 @@ describe.sequential("dispatch workstation form surface", () => {
             ? input.method
             : "GET") ??
         "GET";
+      const body =
+        typeof init?.body === "string"
+          ? init.body
+          : input instanceof Request
+            ? await input.clone().text()
+            : undefined;
+
+      fetchCalls.push({ url, method, body });
 
       if (url.endsWith("/api/fleet/snapshot") && method === "GET") {
         return getFleetSnapshotRoute();
+      }
+
+      if (url.endsWith("/api/dev/simulate") && method === "POST") {
+        if (body?.includes('"action":"reset"')) {
+          return Response.json({ ok: true });
+        }
+        return simulateRoute(
+          new Request("http://localhost/api/dev/simulate", {
+            method,
+            headers: { "Content-Type": "application/json" },
+            body
+          })
+        );
       }
 
       if (url.endsWith("/api/monitor/feed") && method === "GET") {
@@ -94,6 +119,11 @@ describe.sequential("dispatch workstation form surface", () => {
     render(createElement(DispatchWorkstation, { initialStage: "morning_triage" }));
 
     await screen.findByText("Operations desk");
+    expect(
+      fetchCalls.some(
+        (call) => call.url.endsWith("/api/dev/simulate") && call.method === "POST" && call.body?.includes('"reset"')
+      )
+    ).toBe(true);
     expect(screen.queryByText("Fleet brief")).not.toBeInTheDocument();
     expect(screen.queryByText("Priority queue")).not.toBeInTheDocument();
 

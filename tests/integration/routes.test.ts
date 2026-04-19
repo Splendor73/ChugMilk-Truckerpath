@@ -311,7 +311,7 @@ describe.sequential("backend routes", () => {
     expect(logs.some((row) => (row.timeSavedMin ?? 0) > 0)).toBe(true);
   });
 
-  it("resets persisted demo state when simulate reset is requested", async () => {
+  it("reseeds the trip mirror when simulate reset is requested", async () => {
     const assignmentRequest = new Request("http://localhost/api/fleet/assignments", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -338,12 +338,12 @@ describe.sequential("backend routes", () => {
 
     expect(payload.ok).toBe(true);
     expect(await db.loadAssignment.count()).toBe(0);
-    expect(await db.activeTripMirror.count()).toBe(0);
+    expect(await db.activeTripMirror.count()).toBeGreaterThan(0);
     expect(await db.decisionLog.count()).toBe(0);
     expect(await db.interventionDraft.count()).toBe(0);
   });
 
-  it("clears synthetic demo persistence on the first api request after a restart", async () => {
+  it("keeps persisted demo state on the first api request after a restart", async () => {
     const assignmentRequest = new Request("http://localhost/api/fleet/assignments", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -366,10 +366,9 @@ describe.sequential("backend routes", () => {
     const snapshot = fleetSnapshotSchema.parse(await readJson<unknown>(snapshotResponse));
 
     expect(snapshot.sourceMode).toBe("synthetic");
-    expect(await db.loadAssignment.count()).toBe(0);
-    expect(await db.decisionLog.count()).toBe(0);
-    expect(await db.interventionDraft.count()).toBe(0);
-    expect(snapshot.activeTrips.some((trip) => trip.tripId === assignment.tripId)).toBe(false);
+    expect(await db.loadAssignment.count()).toBe(1);
+    expect(await db.activeTripMirror.count()).toBeGreaterThan(0);
+    expect(snapshot.activeTrips.some((trip) => trip.tripId === assignment.tripId)).toBe(true);
   });
 
   it("streams SSE events in tool-call to final order", async () => {

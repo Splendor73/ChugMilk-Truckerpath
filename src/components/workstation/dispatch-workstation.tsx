@@ -739,8 +739,24 @@ export function DispatchWorkstation({
     await Promise.all([loadSnapshot(showRefresh), loadMonitorFeed(), loadRouteDesk()]);
   }
 
+  // On Vercel the server process is ephemeral, so we can't rely on "boot time"
+  // as the reset trigger like we do locally. Instead, treat a full page load
+  // as the demo reset signal: wipe the demo tables once, reseed from the
+  // synthetic NavPro source, then do the normal data pull. Subsequent
+  // monitor ticks will add fresh alerts on top of the clean state.
   useEffect(() => {
-    void refreshAll();
+    void (async () => {
+      try {
+        await fetch("/api/dev/simulate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "reset" })
+        });
+      } catch {
+        // A failed reset shouldn't block the rest of the UI from loading.
+      }
+      await refreshAll();
+    })();
   }, []);
 
   useEffect(() => {

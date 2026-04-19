@@ -61,5 +61,12 @@ export async function seedActiveTripMirrorFromLive(): Promise<number> {
 
 export async function resetDemoState() {
   await clearDemoPersistence();
+  // Reseed so the client is immediately handed a healthy fleet after a reset,
+  // without waiting for a future cold start to rebuild the trip mirror. Also
+  // clear the in-process "runtime ready" flag so `ensureDemoRuntimeReady` on
+  // the next request re-checks the empty-DB case instead of short-circuiting.
+  await seedActiveTripMirrorFromLive();
+  global.__coDispatchDemoRuntimeReady__ = false;
+  global.__coDispatchDemoRuntimePromise__ = undefined;
   return { ok: true as const };
 }
