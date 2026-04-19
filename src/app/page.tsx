@@ -1,14 +1,23 @@
 import { DispatchWorkstation } from "@/components/workstation/dispatch-workstation";
-import { normalizeWorkstationStage } from "@/lib/navigation/workstation";
+import { normalizeWorkstationDeskPanel, normalizeWorkstationStage } from "@/lib/navigation/workstation";
 
 export default function HomePage({
   searchParams
 }: {
-  searchParams?: { stage?: string | string[]; operator?: string | string[] };
+  searchParams?: { stage?: string | string[]; operator?: string | string[]; panel?: string | string[] };
 }) {
-  const initialStage = normalizeWorkstationStage(searchParams?.stage);
+  const initialDeskPanel = normalizeWorkstationDeskPanel(searchParams?.panel);
+  const initialStage = initialDeskPanel
+    ? "morning_triage"
+    : normalizeWorkstationStage(searchParams?.stage);
   const operatorParam = Array.isArray(searchParams?.operator) ? searchParams?.operator[0] : searchParams?.operator;
   const initialOperatorMode = operatorParam === "1" || operatorParam === "true";
 
-  return <DispatchWorkstation initialStage={initialStage} initialOperatorMode={initialOperatorMode} />;
+  return (
+    <DispatchWorkstation
+      initialStage={initialStage}
+      initialOperatorMode={initialOperatorMode}
+      initialDeskPanel={initialDeskPanel}
+    />
+  );
 }

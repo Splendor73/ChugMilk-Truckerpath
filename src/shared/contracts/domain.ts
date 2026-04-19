@@ -140,6 +140,13 @@ export interface RouteDeskCreateRequest {
   status?: ActiveTrip["status"];
 }
 
+export interface RouteDeskUpdateRequest {
+  status?: ActiveTrip["status"];
+  etaMs?: number;
+  currentLoc?: Coordinates;
+  driverId?: number;
+}
+
 export interface FleetSnapshot {
   fetchedAtMs: number;
   sourceMode: "live" | "synthetic";
@@ -239,6 +246,9 @@ export interface BackhaulOption {
   roundTripProfitUsd: number;
   oneWayProfitUsd: number;
   hosFeasible: boolean;
+  hosRequiredMin: number;
+  hosAvailableMin: number;
+  hosBufferMin: number;
   narrative: string;
 }
 

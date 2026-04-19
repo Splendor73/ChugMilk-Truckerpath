@@ -67,7 +67,12 @@ const HERO_DRIVER_IDS = {
   jake: 102,
   kevin: 103,
   sam: 104,
-  sara: 105
+  sara: 105,
+  luis: 106,
+  maria: 107,
+  priya: 110,
+  omar: 111,
+  chris: 113
 } as const;
 
 const CITY_COORDS = {
@@ -118,7 +123,9 @@ const driverBlueprints: SyntheticDriverBlueprint[] = [
     homeState: "AZ",
     homeBase: CITY_COORDS.Tempe,
     currentLocation: CITY_COORDS.Goodyear,
-    hosRemainingMin: 660,
+    // Anchor driver for the demo. Plenty of HOS runway so the dispatcher
+    // can confidently pick him for new loads throughout the walkthrough.
+    hosRemainingMin: 23 * 60,
     workStatus: "AVAILABLE",
     actualMiles: 118,
     oorMiles: 6,
@@ -326,7 +333,10 @@ const driverBlueprints: SyntheticDriverBlueprint[] = [
     homeState: "AZ",
     homeBase: CITY_COORDS.Mesa,
     currentLocation: CITY_COORDS.Tucson,
-    hosRemainingMin: 660,
+    // Secondary anchor driver. Max HOS cushion so he can be used as the
+    // relay option or a fresh pick when the demo script calls for a long
+    // lane without HOS concerns.
+    hosRemainingMin: 25 * 60,
     workStatus: "AVAILABLE",
     actualMiles: 130,
     oorMiles: 3,
@@ -503,7 +513,56 @@ function buildTrail(driver: SyntheticDriverBlueprint, latestUpdateMs: number) {
   }));
 }
 
-function getBaseTrips(stage: ScenarioStage): SyntheticTripRecord[] {
+function getBaseTrips(_stage: ScenarioStage): SyntheticTripRecord[] {
+  // Five concurrent trips is the baseline the demo is rehearsed against:
+  //   - Three healthy on_track runs give the map something alive to show
+  //     and prove the monitoring layer ignores healthy trips.
+  //   - TRIP-ACT3 is the canonical Act 3 breakdown; it keeps the scripted
+  //     `long_idle` status and the existing voice/SMS narrative.
+  //   - TRIP-ACT5 is a second, tonally different alert (eta_slip) so the
+  //     dispatcher sees two alert styles side-by-side on boot without
+  //     having to trigger anything. `draftIntervention` renders each
+  //     trigger in its own voice so the "AI-generated copy" story is
+  //     visible right away.
+  // NOTE on driver selection: the ranking/elimination tests expect Jake
+  // (id 102) to appear in `scoreLoad` as an eliminated candidate, and
+  // `scoreLoad` filters out any driver with an `activeTripId`. Jake must
+  // therefore stay unassigned. Kevin (103) is the scripted relay at the
+  // hardcoded "28 miles from Barstow" distance in the breakdown voice
+  // script, so he also stays unassigned. That leaves Priya, Maria, Sam,
+  // Chris, and Luis for the five baseline trips below.
+  const priyaTrip: SyntheticTripRecord = {
+    tripId: "TRIP-ACT1",
+    driverId: HERO_DRIVER_IDS.priya,
+    loadId: "TL-ACT1-01",
+    route: [
+      cloneCoords(CITY_COORDS.Victorville),
+      cloneCoords(CITY_COORDS.Ontario),
+      cloneCoords(CITY_COORDS["Los Angeles"]),
+      cloneCoords(CITY_COORDS["Long Beach"])
+    ],
+    currentLoc: { lat: 34.08, lng: -117.88 },
+    etaMs: addHours(nowMs(), 2),
+    appointmentTimeIso: formatIsoFromNow(120),
+    status: "on_track"
+  };
+
+  const mariaTrip: SyntheticTripRecord = {
+    tripId: "TRIP-ACT2",
+    driverId: HERO_DRIVER_IDS.maria,
+    loadId: "TL-ACT2-01",
+    route: [
+      cloneCoords(CITY_COORDS.Bakersfield),
+      cloneCoords(CITY_COORDS.Fresno),
+      cloneCoords(CITY_COORDS.Stockton),
+      cloneCoords(CITY_COORDS.Sacramento)
+    ],
+    currentLoc: { lat: 37.2, lng: -120.35 },
+    etaMs: addHours(nowMs(), 4),
+    appointmentTimeIso: formatIsoFromNow(240),
+    status: "on_track"
+  };
+
   const samTrip: SyntheticTripRecord = {
     tripId: "TRIP-ACT3",
     driverId: HERO_DRIVER_IDS.sam,
@@ -520,7 +579,37 @@ function getBaseTrips(stage: ScenarioStage): SyntheticTripRecord[] {
     notes: DEMO_BREAKDOWN_SCRIPT
   };
 
-  return [samTrip];
+  const chrisTrip: SyntheticTripRecord = {
+    tripId: "TRIP-ACT4",
+    driverId: HERO_DRIVER_IDS.chris,
+    loadId: "TL-ACT4-01",
+    route: [
+      cloneCoords(CITY_COORDS.Sacramento),
+      cloneCoords(CITY_COORDS.Reno)
+    ],
+    currentLoc: { lat: 39.05, lng: -120.55 },
+    etaMs: addHours(nowMs(), 2.5),
+    appointmentTimeIso: formatIsoFromNow(150),
+    status: "on_track"
+  };
+
+  const luisTrip: SyntheticTripRecord = {
+    tripId: "TRIP-ACT5",
+    driverId: HERO_DRIVER_IDS.luis,
+    loadId: "TL-ACT5-01",
+    route: [
+      cloneCoords(CITY_COORDS.Flagstaff),
+      cloneCoords(CITY_COORDS.Phoenix)
+    ],
+    // Mid-route on I-17, south of Camp Verde, visibly behind schedule.
+    currentLoc: { lat: 34.55, lng: -111.86 },
+    etaMs: addHours(nowMs(), 5),
+    appointmentTimeIso: formatIsoFromNow(300),
+    status: "eta_slip",
+    notes: "Construction on I-17 south of Camp Verde has pushed ETA back about 2 hours. Customer needs a friendly heads-up."
+  };
+
+  return [priyaTrip, mariaTrip, samTrip, chrisTrip, luisTrip];
 }
 
 function withStageOverlay(driver: SyntheticDriverBlueprint, stage: ScenarioStage): SyntheticDriverBlueprint {
@@ -561,9 +650,21 @@ function buildRuntimeDrivers(state: SyntheticState) {
     const createdTrip = createdTripsByDriver.get(driver.driverId)?.at(-1) ?? null;
     const activeTrip = activeTripsByDriver.get(driver.driverId)?.at(-1) ?? null;
 
-    const currentLocation = createdTrip ? cloneCoords(createdTrip.currentLoc) : cloneCoords(driver.currentLocation);
-    const workStatus = createdTrip ? "IN_TRANSIT" : driver.workStatus;
-    const currentLoadId = createdTrip?.loadId ?? driver.currentLoadId;
+    // Whether the driver's active trip came from the base demo set or was
+    // created at runtime, we want the driver panel + map to reflect that
+    // they're on the road: pin them to the trip's current GPS and flip
+    // their work status to IN_TRANSIT. The stage overlay still wins for
+    // scripted overrides (e.g. Sam stays MAINTENANCE during the breakdown
+    // beat even though he technically has an assigned trip).
+    const assignedTrip = createdTrip ?? activeTrip;
+    const stageOverrideWorkStatus =
+      driver.workStatus === "MAINTENANCE" || driver.workStatus === "RESTING"
+        ? driver.workStatus
+        : null;
+    const currentLocation = assignedTrip ? cloneCoords(assignedTrip.currentLoc) : cloneCoords(driver.currentLocation);
+    const workStatus = stageOverrideWorkStatus
+      ?? (assignedTrip ? "IN_TRANSIT" : driver.workStatus);
+    const currentLoadId = assignedTrip?.loadId ?? driver.currentLoadId;
 
     return {
       ...driver,

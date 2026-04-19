@@ -144,10 +144,17 @@ describe.sequential("dispatch and backhaul", () => {
       driverId: 101
     });
 
+    // Mike's HOS is now high enough (23h) that both BH-01 and BH-02 are
+    // HOS-feasible for the round trip. The sort promotes BH-02 over BH-01
+    // because its PHX return leg leaves a slightly bigger HOS cushion than
+    // BH-01's Vegas detour, while BH-03 (Reno) still fails the HOS check
+    // and lands last. We still assert the seeded BH-01 scenario math is
+    // stable by finding it explicitly.
     expect(options).toHaveLength(3);
-    expect(options.map((option) => option.returnLoad.loadId)).toEqual(["TL-BH-01", "TL-BH-02", "TL-BH-03"]);
-    expect(options[0]?.oneWayProfitUsd).toBe(2100);
-    expect(options[0]?.roundTripProfitUsd).toBe(4800);
-    expect(options[0]?.totalDeadheadMiles).toBe(85);
+    expect(options.map((option) => option.returnLoad.loadId)).toEqual(["TL-BH-02", "TL-BH-01", "TL-BH-03"]);
+    const seededBh01 = options.find((option) => option.returnLoad.loadId === "TL-BH-01");
+    expect(seededBh01?.oneWayProfitUsd).toBe(2100);
+    expect(seededBh01?.roundTripProfitUsd).toBe(4800);
+    expect(seededBh01?.totalDeadheadMiles).toBe(85);
   });
 });

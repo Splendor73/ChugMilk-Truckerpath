@@ -123,6 +123,9 @@ const selectedBackhaul: BackhaulOption = {
   roundTripProfitUsd: 4800,
   oneWayProfitUsd: 2100,
   hosFeasible: true,
+  hosRequiredMin: 540,
+  hosAvailableMin: 660,
+  hosBufferMin: 120,
   narrative: "SFO -> Phoenix closes the return."
 };
 

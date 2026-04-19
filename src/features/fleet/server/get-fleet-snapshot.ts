@@ -443,9 +443,9 @@ function enrichActiveTrip(trip: ActiveTrip, load: Load | undefined, knownMarkets
 }
 
 async function buildLiveActiveTrips(loadsById: Map<string, Load>, knownMarkets: DriverMarket[]): Promise<ActiveTrip[]> {
+  const flags = getFlags();
   const repositories = createRepositories();
   const mirrorTrips = await repositories.activeTripMirror.listAll();
-  const liveTrips = await queryTrips();
   const fromMirror: ActiveTrip[] = mirrorTrips.map((trip) => ({
     tripId: trip.tripId,
     driverId: trip.driverId,
@@ -456,6 +456,17 @@ async function buildLiveActiveTrips(loadsById: Map<string, Load>, knownMarkets: 
     plannedRoute: trip.plannedRouteJson ? (JSON.parse(trip.plannedRouteJson) as ActiveTrip["plannedRoute"]) : []
   }));
 
+  // In synthetic/demo mode the ActiveTripMirror is the session source of
+  // truth. It is seeded once at boot (see `ensureDemoRuntimeReady`) from the
+  // synthetic live list, so every edit or deletion done through the route
+  // desk must stick until the process restarts. Merging `queryTrips()` back
+  // in here would undo those edits on every refresh.
+  const useMirrorAsSourceOfTruth = flags.useSyntheticNavPro || flags.useNavProMock || !flags.hasLiveNavPro;
+  if (useMirrorAsSourceOfTruth) {
+    return fromMirror.map((trip) => enrichActiveTrip(trip, loadsById.get(trip.loadId), knownMarkets));
+  }
+
+  const liveTrips = await queryTrips();
   const liveRows = Array.isArray(liveTrips.data) ? liveTrips.data : [];
   const fromLive = liveRows.flatMap((trip: any) => {
     if (!trip?.trip_id || !trip?.driver_id) {
@@ -486,9 +497,11 @@ async function buildLiveActiveTrips(loadsById: Map<string, Load>, knownMarkets: 
 
 function enrichDrivers(drivers: Driver[], activeTrips: ActiveTrip[]) {
   const tripsByDriver = new Map<number, ActiveTrip[]>();
+  const tripsById = new Map<string, ActiveTrip>();
 
   for (const trip of activeTrips) {
     tripsByDriver.set(trip.driverId, [...(tripsByDriver.get(trip.driverId) ?? []), trip]);
+    tripsById.set(trip.tripId, trip);
   }
 
   return drivers.map((driver) => {
@@ -499,20 +512,32 @@ function enrichDrivers(drivers: Driver[], activeTrips: ActiveTrip[]) {
       ? driverTrips.find((trip) => trip.tripId === driver.activeTripId) ?? driverTrips[0] ?? null
       : driverTrips[0] ?? null;
 
+    // If the upstream integration still reports the driver as assigned to a
+    // trip that no longer exists in the authoritative trip list (e.g. the
+    // dispatcher just deleted it from the route desk), drop the stale
+    // reference so the driver panel does not keep showing it as "driving".
+    const hasRealTrip = Boolean(activeTrip);
+    const resolvedActiveTripId = hasRealTrip ? activeTrip!.tripId : null;
+    const resolvedOperationalStatus: Driver["operationalStatus"] =
+      driver.operationalStatus === "unknown" && hasRealTrip
+        ? "driving"
+        : driver.operationalStatus === "driving" && !hasRealTrip
+          ? "available"
+          : driver.operationalStatus;
+
     return {
       ...driver,
+      activeTripId: resolvedActiveTripId,
       activeTrip: activeTrip ? buildTripSummary(activeTrip) : null,
       recentTrips: driverTrips.map(buildTripSummary),
-      operationalStatus:
-        driver.operationalStatus === "unknown" && activeTrip
-          ? "driving"
-          : driver.operationalStatus
+      operationalStatus: resolvedOperationalStatus
     };
   });
 }
 
 async function fetchFleetSnapshotData() {
   const flags = getFlags();
+  const useMirrorAsSourceOfTruth = flags.useSyntheticNavPro || flags.useNavProMock || !flags.hasLiveNavPro;
   const repositories = createRepositories();
   const pendingLoads = listLoads();
   const knownMarkets = buildKnownMarkets(pendingLoads);
@@ -523,11 +548,17 @@ async function fetchFleetSnapshotData() {
   ]);
   const enrichedDrivers = enrichDrivers(drivers, activeTrips);
 
-  await repositories.activeTripMirror.upsertMany(activeTrips);
+  // In live NavPro mode we still refresh the mirror with the upstream view so
+  // the mirror can back scenario overrides and intervention writes. In demo
+  // mode the mirror is already authoritative (see `buildLiveActiveTrips`) —
+  // rewriting it here would clobber dispatcher edits and un-delete rows.
+  if (!useMirrorAsSourceOfTruth) {
+    await repositories.activeTripMirror.upsertMany(activeTrips);
+  }
 
   return {
     fetchedAtMs: nowMs(),
-    sourceMode: flags.useSyntheticNavPro || flags.useNavProMock || !flags.hasLiveNavPro ? "synthetic" : "live",
+    sourceMode: useMirrorAsSourceOfTruth ? "synthetic" : "live",
     drivers: enrichedDrivers,
     activeTrips,
     pendingLoads,

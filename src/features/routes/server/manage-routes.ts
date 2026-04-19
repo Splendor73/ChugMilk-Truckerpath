@@ -1,4 +1,4 @@
-import type { RouteDeskCreateRequest, RouteDeskItem } from "@/shared/contracts";
+import type { RouteDeskCreateRequest, RouteDeskItem, RouteDeskUpdateRequest } from "@/shared/contracts";
 import { findLoadById } from "@/server/core/load-board";
 import { AppError } from "@/server/core/errors";
 import { createRepositories } from "@/server/repositories";
@@ -90,4 +90,22 @@ export async function deleteManagedRoute(tripId: string) {
 
   await repositories.activeTripMirror.deleteByTripId(tripId);
   return { ok: true as const, tripId };
+}
+
+export async function updateManagedRoute(tripId: string, input: RouteDeskUpdateRequest) {
+  const repositories = createRepositories();
+  const existing = await repositories.activeTripMirror.findByTripId(tripId);
+  if (!existing) {
+    throw new AppError(`Trip ${tripId} was not found.`, 404, "trip_not_found");
+  }
+
+  const updated = await repositories.activeTripMirror.updateByTripId({
+    tripId,
+    status: input.status,
+    etaMs: input.etaMs,
+    currentLoc: input.currentLoc,
+    driverId: input.driverId
+  });
+
+  return mapRouteItem(updated);
 }

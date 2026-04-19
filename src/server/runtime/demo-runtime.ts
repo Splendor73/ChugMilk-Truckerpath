@@ -1,5 +1,5 @@
 import { getFlags } from "@/config/flags";
-import { clearDemoPersistence } from "@/features/demo/server/reset-demo-state";
+import { clearDemoPersistence, seedActiveTripMirrorFromLive } from "@/features/demo/server/reset-demo-state";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -24,9 +24,11 @@ export async function ensureDemoRuntimeReady() {
   }
 
   if (!global.__coDispatchDemoRuntimePromise__) {
-    global.__coDispatchDemoRuntimePromise__ = clearDemoPersistence().then(() => {
-      global.__coDispatchDemoRuntimeReady__ = true;
-    });
+    global.__coDispatchDemoRuntimePromise__ = clearDemoPersistence()
+      .then(() => seedActiveTripMirrorFromLive())
+      .then(() => {
+        global.__coDispatchDemoRuntimeReady__ = true;
+      });
   }
 
   await global.__coDispatchDemoRuntimePromise__;
