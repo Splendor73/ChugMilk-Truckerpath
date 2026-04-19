@@ -46,12 +46,12 @@ export function TopBar({ currentWorkflow }: TopBarProps) {
 
           </div>
 
-          <button
-            type="button"
+          <Link
+            href="/proactive-monitoring"
             className="rounded-full border border-[color:var(--color-shell-border)] bg-[color:var(--color-shell-surface)] px-4 py-2 text-sm font-semibold text-[color:var(--color-shell-text)] transition-colors hover:bg-[color:var(--color-shell-surface-muted)]"
           >
             Go Live
-          </button>
+          </Link>
         </div>
       </div>
 

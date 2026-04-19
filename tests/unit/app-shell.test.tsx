@@ -19,7 +19,7 @@ describe("AppShell", () => {
     expect(screen.getByRole("link", { name: /dispatch new load/i })).toHaveAttribute("href", "/load-assignment");
     expect(screen.getByPlaceholderText(/search loads, drivers/i)).toBeInTheDocument();
     expect(screen.getByText("Search loads, drivers")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /go live/i })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /go live/i })).toHaveAttribute("href", "/proactive-monitoring");
     expect(screen.getByText("Screen Body")).toBeInTheDocument();
   });
 

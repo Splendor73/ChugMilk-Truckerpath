@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useMemo } from "react";
 
 import { dispatcher } from "@/lib/mock-data/dispatcher";
@@ -103,18 +104,18 @@ export function MorningTriageScreen() {
         description="A calm start to the day: clear the critical corridor, confirm the ready roster, and stage the best next move before the first pickup windows open."
         actions={
           <>
-            <button
-              type="button"
+            <Link
+              href="/proactive-monitoring"
               className="rounded-full border border-[color:var(--color-shell-border)] bg-[color:var(--color-shell-surface)] px-4 py-2 text-sm font-semibold text-[color:var(--color-shell-text)] transition-colors hover:bg-[color:var(--color-shell-surface-muted)]"
             >
               Review risk queue
-            </button>
-            <button
-              type="button"
+            </Link>
+            <Link
+              href="/load-assignment"
               className="rounded-full bg-[color:var(--color-shell-brand)] px-4 py-2 text-sm font-semibold text-white shadow-sm transition-opacity hover:opacity-90"
             >
               Start dispatch sweep
-            </button>
+            </Link>
           </>
         }
       />

@@ -3,14 +3,14 @@ import { expect, test } from "@playwright/test";
 test("workflow navigation keeps the shell stable", async ({ page }) => {
   const shellNav = page.getByRole("navigation", { name: "Workflow navigation" });
   const shellSearch = page.getByLabel("Search loads and drivers");
-  const goLiveButton = page.getByRole("button", { name: "Go Live" });
+  const goLiveLink = page.getByRole("link", { name: "Go Live" });
 
   await page.goto("/load-assignment");
 
   await expect(page.getByRole("heading", { name: "Load Assignment" })).toBeVisible();
   await expect(shellNav.getByRole("link", { name: "Load Assignment" })).toHaveAttribute("aria-current", "page");
   await expect(shellSearch).toBeVisible();
-  await expect(goLiveButton).toBeVisible();
+  await expect(goLiveLink).toBeVisible();
 
   await page.getByRole("button", { name: /assign omar ruiz/i }).click();
 
@@ -23,7 +23,7 @@ test("workflow navigation keeps the shell stable", async ({ page }) => {
   await expect(page.getByText("Omar Ruiz")).toBeVisible();
   await expect(page.getByText("ATL-MCO-3382")).toBeVisible();
   await expect(shellSearch).toBeVisible();
-  await expect(goLiveButton).toBeVisible();
+  await expect(goLiveLink).toBeVisible();
 
   await page
     .locator("section")
@@ -40,7 +40,7 @@ test("workflow navigation keeps the shell stable", async ({ page }) => {
   await expect(shellNav.getByRole("link", { name: "Proactive Monitoring" })).toHaveAttribute("aria-current", "page");
   await expect(page.getByText("St. Louis, MO -> Indianapolis, IN").first()).toBeVisible();
   await expect(shellSearch).toBeVisible();
-  await expect(goLiveButton).toBeVisible();
+  await expect(goLiveLink).toBeVisible();
 
   await shellNav.getByRole("link", { name: "Morning Triage" }).click();
 
@@ -48,7 +48,7 @@ test("workflow navigation keeps the shell stable", async ({ page }) => {
   await expect(shellNav.getByRole("link", { name: "Morning Triage" })).toHaveAttribute("aria-current", "page");
   await expect(page.getByText("ATL-MCO-3382")).toBeVisible();
   await expect(shellSearch).toBeVisible();
-  await expect(goLiveButton).toBeVisible();
+  await expect(goLiveLink).toBeVisible();
 });
 
 test.describe("mobile shell", () => {
