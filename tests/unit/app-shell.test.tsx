@@ -1,7 +1,9 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import { AppShell } from "@/components/app-shell/app-shell";
+import MorningTriagePage from "@/app/morning-triage/page";
+import { MockDataProvider } from "@/lib/mock-data/store";
 
 describe("AppShell", () => {
   it("renders the persistent shell around the current workflow", () => {
@@ -19,5 +21,25 @@ describe("AppShell", () => {
     expect(screen.getByText("Search loads, drivers")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /go live/i })).toBeInTheDocument();
     expect(screen.getByText("Screen Body")).toBeInTheDocument();
+  });
+
+  it("renders the morning triage route content inside the shell", () => {
+    render(
+      <MockDataProvider>
+        <MorningTriagePage />
+      </MockDataProvider>,
+    );
+
+    expect(screen.getByRole("heading", { name: /morning triage/i })).toBeInTheDocument();
+    expect(screen.getByText(/daily synthesis/i)).toBeInTheDocument();
+    expect(screen.getByText(/fleet readiness/i)).toBeInTheDocument();
+    expect(screen.getByText(/driver roster/i)).toBeInTheDocument();
+
+    const mapHeading = screen.getByRole("heading", { name: /phoenix, az -> las vegas, nv/i });
+    const mapCard = mapHeading.closest("section");
+
+    expect(mapCard).not.toBeNull();
+    expect(within(mapCard as HTMLElement).getByText("PHX-LAS-9014")).toBeInTheDocument();
+    expect(within(mapCard as HTMLElement).getByText("Lexi Carter")).toBeInTheDocument();
   });
 });
