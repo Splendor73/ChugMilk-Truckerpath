@@ -384,7 +384,6 @@ GEMINI_API_KEY=...
 # (emails pre-loaded 72h before event — do this NOW if not done)
 ELEVENLABS_API_KEY=...
 ELEVENLABS_VOICE_ID=21m00Tcm4TlvDq8ikWAM   # "Rachel" default, professional American female
-ELEVENLABS_AGENT_ID=                         # created in Phase 4 via ElevenLabs dashboard
 
 # ---- Mapbox ----
 # https://account.mapbox.com — free tier 50K loads/month
@@ -402,7 +401,7 @@ DATABASE_URL=file:./dev.db
 | 1 | `NAVPRO_*`, `NEXT_PUBLIC_MAPBOX_TOKEN`, `DATABASE_URL` | A hits NavPro, C renders Mapbox |
 | 2 | `GROQ_API_KEY`, `GEMINI_API_KEY` added | B's agent loop runs |
 | 3 | (same) | — |
-| 4 | `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`, `ELEVENLABS_AGENT_ID` | B's voice route streams audio |
+| 4 | `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID` | B's voice route streams audio |
 | 5 | (all) | full demo dry-run |
 | 6 | Vercel account | `vercel deploy --prod` |
 
@@ -690,7 +689,7 @@ A broken demo from tired presenters loses to a clean demo from rested ones. No c
 
 🎯 **Goal** — Maria's phone rings through the laptop speakers. Real ElevenLabs voice. She says "execute." Screen updates live. This is the emotional peak of the demo and the ElevenLabs side-track winner.
 
-🔑 **Keys** — `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`, `ELEVENLABS_AGENT_ID` must be populated.
+🔑 **Keys** — `ELEVENLABS_API_KEY` and `ELEVENLABS_VOICE_ID` must be populated.
 
 #### 👤 A's tasks
 1. Implement `POST /api/dev/simulate`: takes `{tripId, scenario}`, flips that trip's `ActiveTripMirror` state so the next monitor tick detects it. Scenarios: `"breakdown"` (long_idle outside any POI), `"route_deviation"` (GPS point 30 mi off planned route), `"eta_slip"` (predicted ETA +3 hours).

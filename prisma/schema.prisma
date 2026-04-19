@@ -1,0 +1,101 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model DecisionLog {
+  id                 String   @id @default(uuid())
+  createdAt          DateTime @default(now())
+  actionType         String
+  summary            String
+  mathSummary        String?
+  outcome            String
+  tripId             String?
+  driverId           Int?
+  deadheadSavedMi    Float?
+  revenueRecoveredUsd Float?
+  timeSavedMin       Float?
+  entityType         String?
+  source             String?
+}
+
+model LoadAssignment {
+  id               String   @id @default(uuid())
+  createdAt        DateTime @default(now())
+  driverId         Int
+  loadId           String
+  returnLoadId     String?
+  tripId           String   @unique
+  returnTripId     String?
+  status           String   @default("created")
+  scoreSnapshotJson String?
+  assignedBy       String   @default("copilot-ui")
+  navProPayloadJson String?
+  backhaulNarrative String?
+  profitDeltaUsd   Float?
+}
+
+model ActiveTripMirror {
+  tripId            String   @id
+  driverId          Int
+  loadId            String
+  status            String
+  lastSeenAt        DateTime
+  etaMs             BigInt
+  currentLat        Float
+  currentLng        Float
+  scenarioOverride  String?
+  plannedRouteJson  String?
+  sourceUpdatedAt   DateTime?
+  overrideReason    String?
+}
+
+model InterventionDraft {
+  id              String   @id @default(uuid())
+  createdAt       DateTime @default(now())
+  tripId          String
+  trigger         String
+  customerSms     String
+  relayDriverId   Int?
+  relayDriverName String?
+  relayDistanceMi Float?
+  rerouteNeeded   Boolean
+  voiceScript     String
+  executedAt      DateTime?
+  status          String   @default("drafted")
+  matchedCommand  String?
+  audioSource     String?
+
+  @@index([tripId, createdAt])
+}
+
+model EngineShowcaseScenario {
+  id          String   @id
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  title       String
+  explanation String
+  loadJson    String
+  drivers     EngineShowcaseDriver[]
+}
+
+model EngineShowcaseDriver {
+  id              String   @id @default(uuid())
+  scenarioId      String
+  createdAt       DateTime @default(now())
+  displayOrder    Int
+  driverId        Int
+  driverName      String
+  homeBase        String
+  currentMarket   String
+  hosRemainingMin Int
+  summary         String
+  signalsJson     String
+  scenario        EngineShowcaseScenario @relation(fields: [scenarioId], references: [id], onDelete: Cascade)
+
+  @@index([scenarioId, displayOrder])
+}

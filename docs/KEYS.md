@@ -95,7 +95,6 @@ curl "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:g
 ```bash
 ELEVENLABS_API_KEY=sk_xxxxxxxxxxxxxxxxxxxx
 ELEVENLABS_VOICE_ID=21m00Tcm4TlvDq8ikWAM   # "Rachel" — professional American female, good default
-ELEVENLABS_AGENT_ID=                         # created via dashboard in Phase 4 for conversational agent
 ```
 
 **Smoke test (TTS):**
@@ -107,10 +106,6 @@ curl -X POST "https://api.elevenlabs.io/v1/text-to-speech/$ELEVENLABS_VOICE_ID" 
   --output test.mp3
 ```
 Expect `test.mp3` with audible speech.
-
-**Phase 4 follow-up:** create a Conversational Agent in the ElevenLabs dashboard, paste its ID into `ELEVENLABS_AGENT_ID`. System prompt: *"You are Maria's dispatcher assistant. Respond briefly. Accept commands 'execute', 'cancel', 'call {name}'."*
-
----
 
 ## 5. Mapbox — the fleet map (Agent C, Phase 0)
 
@@ -166,7 +161,6 @@ GEMINI_API_KEY=
 # Voice (Agent B)
 ELEVENLABS_API_KEY=
 ELEVENLABS_VOICE_ID=21m00Tcm4TlvDq8ikWAM
-ELEVENLABS_AGENT_ID=
 
 # Map (Agent C)
 NEXT_PUBLIC_MAPBOX_TOKEN=
@@ -188,7 +182,7 @@ USE_NAVPRO_MOCK=false
 | 1 | `NAVPRO_*`, `NEXT_PUBLIC_MAPBOX_TOKEN`, `DATABASE_URL` | A's snapshot endpoint, C's map |
 | 2 | `GROQ_API_KEY`, `GEMINI_API_KEY` | B's agent loop |
 | 3 | (same as 2) | — |
-| 4 | `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`, `ELEVENLABS_AGENT_ID` | B's voice routes |
+| 4 | `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID` | B's voice routes |
 | 5 | all | full dry-run |
 | 6 | all (in Vercel dashboard too) | production deploy |
 
