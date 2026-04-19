@@ -873,7 +873,7 @@ export function DispatchWorkstation({
   const selectedRouteDriver = selectedRouteTrip ? driverById.get(selectedRouteTrip.driverId) ?? null : null;
 
   const selectedRouteLoad =
-    snapshot?.pendingLoads.find((load) => load.loadId === routeCreateForm.loadId) ?? null;
+    snapshot?.pendingLoads?.find((load) => load.loadId === routeCreateForm.loadId) ?? null;
 
   const visibleDrafts = useMemo(() => {
     return monitorFeed?.drafts ?? [];
@@ -889,9 +889,9 @@ export function DispatchWorkstation({
       return null;
     }
     if (openDraft) {
-      return snapshot.activeTrips.find((trip) => trip.tripId === openDraft.tripId) ?? null;
+      return snapshot.activeTrips?.find((trip) => trip.tripId === openDraft.tripId) ?? null;
     }
-    return snapshot.activeTrips.find((trip) => trip.status !== "on_track") ?? snapshot.activeTrips[0] ?? null;
+    return snapshot.activeTrips?.find((trip) => trip.status !== "on_track") ?? snapshot.activeTrips?.[0] ?? null;
   }, [openDraft, snapshot]);
 
   const restRiskDrivers = (snapshot?.drivers ?? [])
@@ -930,7 +930,7 @@ export function DispatchWorkstation({
     ];
   }, [complianceItems, driverById, maintenanceTrips, restRiskDrivers]);
 
-  const monitoringRows = monitorFeed?.decisionLog.slice(0, 6) ?? [];
+  const monitoringRows = monitorFeed?.decisionLog?.slice(0, 6) ?? [];
 
   useEffect(() => {
     if (driverDeskRows.length === 0) {

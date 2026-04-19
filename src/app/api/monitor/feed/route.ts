@@ -4,6 +4,7 @@ import { ensureDemoRuntimeReady } from "@/server/runtime/demo-runtime";
 import { getMonitorFeed } from "@/features/monitoring/server/get-monitor-feed";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {

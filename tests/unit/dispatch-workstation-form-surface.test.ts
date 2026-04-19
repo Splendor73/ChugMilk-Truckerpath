@@ -213,6 +213,16 @@ describe.sequential("dispatch workstation form surface", () => {
         })
       })
     );
+    await simulateRoute(
+      new Request("http://localhost/api/dev/simulate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tripId: "TRIP-ACT5",
+          scenario: "eta_slip"
+        })
+      })
+    );
     await monitorTickRoute();
     // Baseline demo seed ships two non-on_track trips (TRIP-ACT3
     // long_idle + TRIP-ACT5 eta_slip), so the monitor tick above already
