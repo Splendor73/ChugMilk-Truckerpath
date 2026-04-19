@@ -78,7 +78,7 @@ function routeMiles(load: NonNullable<ReturnType<typeof findLoadById>>) {
 
 export async function createAssignment(input: FleetAssignmentRequest): Promise<FleetAssignmentResponse> {
   const repositories = createRepositories();
-  const load = findLoadById(input.loadId);
+  const load = input.load ?? findLoadById(input.loadId);
   if (!load) {
     throw new Error(`Load ${input.loadId} not found.`);
   }

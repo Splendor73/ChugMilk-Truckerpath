@@ -1,5 +1,5 @@
 export const DEMO_BREAKDOWN_SCRIPT =
-  "Maria, truck 14 has been stopped 47 minutes outside Barstow. Engine idle pattern suggests breakdown. I've drafted the customer SMS with a revised ETA, found relay driver Kevin 28 miles away with 9 HOS hours left, and prepped the swap plan. Say 'execute' to approve.";
+  "Maria, truck 14 has been stopped 47 minutes outside Barstow. Engine idle pattern suggests breakdown. I've drafted the customer SMS with a revised ETA, found relay driver Kevin 28 miles away with 9 HOS hours left, and prepped the swap plan.";
 
 export const SCENARIO_STAGES = [
   "morning_triage",

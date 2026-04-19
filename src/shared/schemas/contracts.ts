@@ -88,8 +88,43 @@ export const activeTripSchema = z.object({
   remainingMiles: z.number().nullable().optional()
 });
 
+export const routeDeskItemSchema = z.object({
+  tripId: z.string(),
+  driverId: z.number(),
+  loadId: z.string(),
+  status: tripStatusSchema,
+  etaMs: z.number(),
+  currentLoc: coordinatesSchema,
+  plannedRoute: z.array(coordinatesSchema),
+  routePointCount: z.number(),
+  lastSeenAtMs: z.number(),
+  sourceUpdatedAtMs: z.number().nullable(),
+  scenarioOverride: z.string().nullable().optional(),
+  overrideReason: z.string().nullable().optional(),
+  origin: loadStopSchema.nullable().optional(),
+  destination: loadStopSchema.nullable().optional(),
+  routeContext: z.string(),
+  remainingMiles: z.number().nullable().optional(),
+  customer: z.string().nullable().optional(),
+  commodity: z.string().nullable().optional(),
+  rateUsd: z.number().nullable().optional(),
+  pickupStartMs: z.number().nullable().optional(),
+  pickupEndMs: z.number().nullable().optional()
+});
+
+export const routeDeskResponseSchema = z.object({
+  routes: z.array(routeDeskItemSchema)
+});
+
+export const routeDeskCreateRequestSchema = z.object({
+  driverId: z.number().int().positive(),
+  loadId: z.string().min(1),
+  status: tripStatusSchema.optional()
+});
+
 export const fleetSnapshotSchema = z.object({
   fetchedAtMs: z.number(),
+  sourceMode: z.enum(["live", "synthetic"]),
   drivers: z.array(driverSchema),
   activeTrips: z.array(activeTripSchema),
   pendingLoads: z.array(loadSchema),
@@ -197,6 +232,7 @@ export const agentRequestSchema = z.object({
 export const assignmentRequestSchema = z.object({
   driverId: z.number(),
   loadId: z.string(),
+  load: loadSchema.optional(),
   returnLoadId: z.string().optional()
 });
 
@@ -213,6 +249,7 @@ export const agentScoreRequestSchema = z.object({
 
 export const agentBackhaulRequestSchema = z.object({
   outboundLoadId: z.string(),
+  outboundLoad: loadSchema.optional(),
   driverId: z.number()
 });
 

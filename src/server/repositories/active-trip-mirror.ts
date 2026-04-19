@@ -40,8 +40,35 @@ export function createActiveTripMirrorRepository() {
     async listAll() {
       return db.activeTripMirror.findMany({ orderBy: { lastSeenAt: "desc" } });
     },
+    async createManual(input: {
+      tripId: string;
+      driverId: number;
+      loadId: string;
+      status: ActiveTrip["status"];
+      etaMs: number;
+      currentLoc: ActiveTrip["currentLoc"];
+      plannedRoute: ActiveTrip["plannedRoute"];
+    }) {
+      return db.activeTripMirror.create({
+        data: {
+          tripId: input.tripId,
+          driverId: input.driverId,
+          loadId: input.loadId,
+          status: input.status,
+          lastSeenAt: new Date(),
+          etaMs: BigInt(Math.round(input.etaMs)),
+          currentLat: input.currentLoc.lat,
+          currentLng: input.currentLoc.lng,
+          plannedRouteJson: JSON.stringify(input.plannedRoute),
+          sourceUpdatedAt: new Date()
+        }
+      });
+    },
     async findByTripId(tripId: string) {
       return db.activeTripMirror.findUnique({ where: { tripId } });
+    },
+    async deleteByTripId(tripId: string) {
+      return db.activeTripMirror.delete({ where: { tripId } });
     },
     async setScenarioOverride(tripId: string, scenario: string) {
       return db.activeTripMirror.update({

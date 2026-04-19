@@ -1,11 +1,13 @@
 import { agentScoreRequestSchema } from "@/shared/schemas/contracts";
 import { fail, ok, readJson } from "@/server/core/http";
+import { ensureDemoRuntimeReady } from "@/server/runtime/demo-runtime";
 import { scoreLoad } from "@/features/dispatch/server/score-load";
 
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
   try {
+    await ensureDemoRuntimeReady();
     const input = await readJson(request, agentScoreRequestSchema);
     const scores = await scoreLoad(input.load);
     return ok(scores);

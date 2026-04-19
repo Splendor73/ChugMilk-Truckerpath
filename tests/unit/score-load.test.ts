@@ -44,6 +44,7 @@ function makeSnapshot(overrides: Partial<FleetSnapshot> = {}): FleetSnapshot {
   const pendingLoads = overrides.pendingLoads ?? [];
   return {
     fetchedAtMs: baseNowMs,
+    sourceMode: overrides.sourceMode ?? "synthetic",
     drivers: overrides.drivers ?? [],
     activeTrips: overrides.activeTrips ?? [],
     pendingLoads,

@@ -4,6 +4,7 @@ import type { InterventionDraft } from "@/shared/contracts/domain";
 export interface FleetAssignmentRequest {
   driverId: number;
   loadId: string;
+  load?: Load;
   returnLoadId?: string;
 }
 
@@ -37,6 +38,7 @@ export interface AgentScoreRequest {
 
 export interface AgentBackhaulRequest {
   outboundLoadId: string;
+  outboundLoad?: Load;
   driverId: number;
 }
 

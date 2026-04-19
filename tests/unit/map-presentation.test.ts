@@ -27,6 +27,7 @@ const flaggedDriver: Driver = {
 
 const snapshot: FleetSnapshotResponse = {
   fetchedAtMs: 1,
+  sourceMode: "synthetic",
   drivers: [baseDriver, flaggedDriver],
   activeTrips: [
     {

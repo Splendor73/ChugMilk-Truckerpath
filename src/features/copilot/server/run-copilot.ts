@@ -95,7 +95,11 @@ export async function* runCopilot(input: {
       const topScore = scores.find((score) => !score.eliminated);
       if (topScore) {
         yield { type: "tool_call", payload: { tool: "find_backhauls", args: { outboundLoadId: parsedLoad.loadId, driverId: topScore.driverId } } };
-        backhauls = await getBackhaulOptions({ outboundLoadId: parsedLoad.loadId, driverId: topScore.driverId });
+        backhauls = await getBackhaulOptions({
+          outboundLoadId: parsedLoad.loadId,
+          outboundLoad: parsedLoad,
+          driverId: topScore.driverId
+        });
         yield { type: "tool_result", payload: { tool: "find_backhauls", result: backhauls } };
       }
     }

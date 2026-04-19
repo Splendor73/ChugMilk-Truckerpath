@@ -1,24 +1,28 @@
 "use client";
 
-import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
+import type { PointerEvent as ReactPointerEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import type {
-  DemoAdvancedRankingResponse,
-  AgentStreamEvent,
-  BackhaulOption,
-  Driver,
-  DriverScore,
-  FleetAssignmentResponse,
-  FleetSnapshotResponse,
-  Load,
-  MonitorDraftView,
-  MonitorFeedResponse
+import { AppShell } from "@/components/app-shell/app-shell";
+import {
+  routeDeskStatusOptions,
+  type AgentStreamEvent,
+  type BackhaulOption,
+  type Driver,
+  type DriverScore,
+  type FleetAssignmentResponse,
+  type FleetSnapshotResponse,
+  type Load,
+  type MonitorDraftView,
+  type MonitorFeedResponse,
+  type RouteDeskCreateRequest,
+  type RouteDeskItem,
+  type RouteDeskResponse
 } from "@/shared/contracts";
 import {
+  buildWorkstationHref,
   normalizeWorkstationStage,
   workstationStageLabels,
-  workstationStageOrder,
   type WorkstationStage
 } from "@/lib/navigation/workstation";
 import {
@@ -34,18 +38,17 @@ type DispatchWorkstationProps = {
 
 type AgentFinalPayload = Extract<AgentStreamEvent, { type: "final" }>["payload"];
 type DriverDeskFilter = "all" | "ready" | "active" | "rest" | "flagged";
+type DeskPanelView = "drivers" | "routes";
+type TopBarNavItem = WorkstationStage | DeskPanelView;
 type DispatchConfirmation =
   | { mode: "outbound" }
   | { mode: "round_trip"; returnLoadId: string };
 
-const DEMO_LOAD_TEXT =
-  "Phoenix to San Francisco dry van load. Pickup tomorrow 8am. Rate $3,200. Weight 38,000 lbs.";
 const PANEL_WIDTH_STORAGE_KEY = "co-dispatch-panel-width";
 const DEFAULT_PANEL_WIDTH = 620;
 const DEFAULT_PANEL_RATIO = 1 / 3;
 const MIN_PANEL_WIDTH = 520;
 const MAX_PANEL_WIDTH = 920;
-const RAIL_WIDTH = 72;
 
 function formatNumber(value: number) {
   return new Intl.NumberFormat("en-US").format(value);
@@ -81,28 +84,6 @@ function formatDateTime(value: number) {
     hour: "numeric",
     minute: "2-digit"
   }).format(value);
-}
-
-function stageHref(stage: WorkstationStage, operatorMode = false) {
-  const params = new URLSearchParams();
-  if (stage !== "morning_triage") {
-    params.set("stage", stage);
-  }
-  if (operatorMode) {
-    params.set("operator", "1");
-  }
-  const query = params.toString();
-  return query ? `/?${query}` : "/";
-}
-
-function driverStatusTone(driver: Driver) {
-  if (driver.hosStatus === "must_rest") {
-    return "bg-[#FCE8E8] text-[#A33939]";
-  }
-  if (driver.complianceFlags.length > 0) {
-    return "bg-[#FFF3D7] text-[#996B00]";
-  }
-  return "bg-[#E7F0FF] text-[color:var(--navpro-text-primary)]";
 }
 
 function getDriverDeskStatus(driver: Driver) {
@@ -145,6 +126,21 @@ function getDriverDeskStatus(driver: Driver) {
   };
 }
 
+function getRouteStatusTone(status: RouteDeskItem["status"]) {
+  switch (status) {
+    case "route_deviation":
+      return "bg-[#FFF3D7] text-[#996B00]";
+    case "long_idle":
+      return "bg-[#FFE4DA] text-[#A9441F]";
+    case "hos_risk":
+      return "bg-[#FCE8E8] text-[#A33939]";
+    case "eta_slip":
+      return "bg-[#F7E8FF] text-[#7A3DB8]";
+    default:
+      return "bg-[#E6F6EE] text-[#0E8A5B]";
+  }
+}
+
 function matchesDriverDeskFilter(driver: Driver, filter: DriverDeskFilter) {
   switch (filter) {
     case "ready":
@@ -168,6 +164,22 @@ function formatPerformanceDelta(actual: number, scheduled: number) {
 
   return `${delta > 0 ? "+" : ""}${formatNumber(delta)} mi`;
 }
+
+function formatCountLabel(count: number, singular: string, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function cleanVoiceScriptForDisplay(script: string) {
+  return script.replace(/\s*Say ['"].+?['"] to approve\.?$/i, "").trim();
+}
+
+const driverDeskFilters: Array<{ key: DriverDeskFilter; label: string }> = [
+  { key: "all", label: "All" },
+  { key: "ready", label: "Ready" },
+  { key: "active", label: "Active" },
+  { key: "rest", label: "Rest" },
+  { key: "flagged", label: "Flagged" }
+];
 
 async function readAgentStream(request: string) {
   const response = await fetch("/api/agent", {
@@ -238,7 +250,6 @@ function Glyph({
     | "logout"
     | "bell"
     | "settings"
-    | "search"
     | "spark"
     | "warning"
     | "voice"
@@ -336,15 +347,6 @@ function Glyph({
     );
   }
 
-  if (name === "search") {
-    return (
-      <svg viewBox="0 0 24 24" className={className} fill="none" stroke={stroke} strokeWidth="1.8">
-        <circle cx="11" cy="11" r="5.5" />
-        <path d="m16 16 4 4" />
-      </svg>
-    );
-  }
-
   if (name === "spark") {
     return (
       <svg viewBox="0 0 24 24" className={className} fill="none" stroke={stroke} strokeWidth="1.8">
@@ -414,77 +416,7 @@ function Avatar({
   return <div className={`grid h-10 w-10 place-items-center rounded-full text-sm font-bold ${toneClasses[tone]}`}>{initials}</div>;
 }
 
-function RailButton({
-  active,
-  label,
-  glyph,
-  onClick
-}: {
-  active?: boolean;
-  label: string;
-  glyph: Parameters<typeof Glyph>[0]["name"];
-  onClick?: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={[
-        "group flex w-full flex-col items-center justify-center border-l-4 py-4 transition-all",
-        active
-          ? "border-[color:var(--navpro-text-primary)] bg-[#4066D4]/5 text-[#214cba]"
-          : "border-transparent text-slate-400 hover:bg-white hover:text-[#4066D4]"
-      ].join(" ")}
-    >
-      <Glyph name={glyph} className="mb-1 h-5 w-5" active={active} />
-      <span className="text-[9px] font-semibold uppercase tracking-[0.16em]">{label}</span>
-    </button>
-  );
-}
-
-function TopNavButton({
-  active,
-  label,
-  onClick
-}: {
-  active?: boolean;
-  label: string;
-  onClick?: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={[
-        "inline-flex h-11 items-center self-center px-4 text-[15px] font-medium leading-none transition-colors",
-        active
-          ? "border-b-2 border-[#214cba] text-[#214cba]"
-          : "text-slate-500 hover:bg-slate-50 hover:text-slate-800"
-      ].join(" ")}
-    >
-      {label}
-    </button>
-  );
-}
-
-const headerNavItems: Array<{
-  label: string;
-  stage: WorkstationStage;
-}> = [
-  { label: "Fleet", stage: "morning_triage" },
-  { label: "Dispatch", stage: "load_assignment" },
-  { label: "Monitor", stage: "trip_monitoring" }
-];
-
 type CandidateMetricKey = "deadhead" | "hos" | "fuel" | "eta" | "ripple";
-
-const driverDeskFilters: Array<{ key: DriverDeskFilter; label: string }> = [
-  { key: "all", label: "All" },
-  { key: "ready", label: "Ready" },
-  { key: "active", label: "Active" },
-  { key: "rest", label: "Rest" },
-  { key: "flagged", label: "Flagged" }
-];
 
 export function DispatchWorkstation({
   initialStage = "morning_triage",
@@ -498,7 +430,7 @@ export function DispatchWorkstation({
   const [monitorFeed, setMonitorFeed] = useState<MonitorFeedResponse | null>(null);
   const [snapshotError, setSnapshotError] = useState<string | null>(null);
   const [monitorError, setMonitorError] = useState<string | null>(null);
-  const [pasteInput, setPasteInput] = useState(DEMO_LOAD_TEXT);
+  const [pasteInput, setPasteInput] = useState("");
   const [copilotSummary, setCopilotSummary] = useState("");
   const [parsedLoad, setParsedLoad] = useState<Load | null>(null);
   const [scores, setScores] = useState<DriverScore[]>([]);
@@ -507,35 +439,63 @@ export function DispatchWorkstation({
   const [selectedDriverId, setSelectedDriverId] = useState<number | null>(null);
   const [selectedDeskDriverId, setSelectedDeskDriverId] = useState<number | null>(null);
   const [selectedReturnLoadId, setSelectedReturnLoadId] = useState<string | null>(null);
-  const [advancedShowcase, setAdvancedShowcase] = useState<DemoAdvancedRankingResponse | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isDispatching, setIsDispatching] = useState(false);
   const [isOpeningBackhaul, setIsOpeningBackhaul] = useState(false);
   const [isTriggeringMonitor, setIsTriggeringMonitor] = useState(false);
   const [isExecuting, setIsExecuting] = useState(false);
-  const [isLoadingAdvancedShowcase, setIsLoadingAdvancedShowcase] = useState(false);
   const [backhaulOpen, setBackhaulOpen] = useState(false);
   const [assignmentFeedback, setAssignmentFeedback] = useState<string | null>(null);
   const [audioStatus, setAudioStatus] = useState<string | null>(null);
-  const [advancedShowcaseError, setAdvancedShowcaseError] = useState<string | null>(null);
   const [isOperatorRunning, setIsOperatorRunning] = useState(false);
   const [selectedMetricKey, setSelectedMetricKey] = useState<CandidateMetricKey>("deadhead");
-  const [driverSearch, setDriverSearch] = useState("");
   const [driverDeskFilter, setDriverDeskFilter] = useState<DriverDeskFilter>("all");
+  const [deskPanelView, setDeskPanelView] = useState<DeskPanelView>("drivers");
+  const [activeTopBarNav, setActiveTopBarNav] = useState<TopBarNavItem>(normalizeWorkstationStage(initialStage));
+  const [routeDesk, setRouteDesk] = useState<RouteDeskResponse | null>(null);
+  const [routeDeskError, setRouteDeskError] = useState<string | null>(null);
+  const [routeDeskMessage, setRouteDeskMessage] = useState<string | null>(null);
+  const [isSavingRoute, setIsSavingRoute] = useState(false);
+  const [deletingRouteTripId, setDeletingRouteTripId] = useState<string | null>(null);
+  const [routeCreateForm, setRouteCreateForm] = useState<{
+    driverId: string;
+    loadId: string;
+    status: NonNullable<RouteDeskCreateRequest["status"]>;
+  }>({
+    driverId: "",
+    loadId: "",
+    status: "on_track"
+  });
   const [pendingDispatchConfirmation, setPendingDispatchConfirmation] = useState<DispatchConfirmation | null>(null);
-  const [dismissedDraftIds, setDismissedDraftIds] = useState<string[]>([]);
-  const [draftOverrides, setDraftOverrides] = useState<Record<string, { voiceScript: string; customerSms: string }>>({});
-  const [isEditingDraft, setIsEditingDraft] = useState(false);
-  const [draftEditor, setDraftEditor] = useState({ voiceScript: "", customerSms: "" });
+  const [selectedAlertDraftId, setSelectedAlertDraftId] = useState<string | null>(null);
+  const [isAlertPopupMinimized, setIsAlertPopupMinimized] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const mapRef = useRef<DispatchMapHandle | null>(null);
   const panelResizeStartRef = useRef<{ x: number; width: number } | null>(null);
 
   useEffect(() => {
-    const nextHref = stageHref(activeStage, operatorMode);
+    const nextHref = buildWorkstationHref(activeStage, operatorMode);
     window.history.replaceState({}, "", nextHref);
   }, [activeStage, operatorMode]);
+
+  useEffect(() => {
+    if (activeTopBarNav === "drivers" || activeTopBarNav === "routes") {
+      return;
+    }
+
+    setActiveTopBarNav(activeStage);
+  }, [activeStage, activeTopBarNav]);
+
+  function handleTopBarStageChange(stage: WorkstationStage) {
+    setActiveTopBarNav(stage);
+    setActiveStage(stage);
+  }
+
+  function handleTopBarDeskPanelChange(panel: DeskPanelView) {
+    setActiveTopBarNav(panel);
+    setDeskPanelView(panel);
+  }
 
   useEffect(() => {
     function syncViewportWidth() {
@@ -551,7 +511,7 @@ export function DispatchWorkstation({
   }, []);
 
   useEffect(() => {
-    const availableWidth = Math.max(viewportWidth - RAIL_WIDTH, 900);
+    const availableWidth = Math.max(viewportWidth, 900);
     const savedWidth = window.localStorage.getItem(PANEL_WIDTH_STORAGE_KEY);
     if (!savedWidth) {
       setPanelWidth(Math.max(MIN_PANEL_WIDTH, Math.min(MAX_PANEL_WIDTH, Math.round(availableWidth * DEFAULT_PANEL_RATIO))));
@@ -623,8 +583,22 @@ export function DispatchWorkstation({
     }
   }
 
+  async function loadRouteDesk() {
+    try {
+      const response = await fetch("/api/routes", { cache: "no-store" });
+      const payload = (await response.json()) as RouteDeskResponse;
+      if (!response.ok) {
+        throw new Error((payload as { message?: string }).message ?? "Unable to load routes.");
+      }
+      setRouteDesk(payload);
+      setRouteDeskError(null);
+    } catch (error) {
+      setRouteDeskError(error instanceof Error ? error.message : "Unable to load routes.");
+    }
+  }
+
   async function refreshAll(showRefresh = false) {
-    await Promise.all([loadSnapshot(showRefresh), loadMonitorFeed()]);
+    await Promise.all([loadSnapshot(showRefresh), loadMonitorFeed(), loadRouteDesk()]);
   }
 
   useEffect(() => {
@@ -646,14 +620,6 @@ export function DispatchWorkstation({
     return () => window.clearInterval(timer);
   }, []);
 
-  useEffect(() => {
-    if (activeStage !== "load_assignment" || advancedShowcase || isLoadingAdvancedShowcase) {
-      return;
-    }
-
-    void handleLoadAdvancedShowcase();
-  }, [activeStage, advancedShowcase, isLoadingAdvancedShowcase]);
-
   const selectedScore =
     scores.find((score) => score.driverId === selectedDriverId) ??
     scores.find((score) => !score.eliminated) ??
@@ -667,61 +633,48 @@ export function DispatchWorkstation({
   }, [snapshot]);
 
   const driverDeskRows = useMemo(() => {
-    const query = driverSearch.trim().toLowerCase();
-
-    return (snapshot?.drivers ?? []).filter((driver) => {
-      if (!matchesDriverDeskFilter(driver, driverDeskFilter)) {
-        return false;
-      }
-
-      if (!query) {
-        return true;
-      }
-
-      const haystack = `${driver.name} ${driver.driverId} ${driver.homeBase.city} ${driver.phone}`.toLowerCase();
-      return haystack.includes(query);
-    });
-  }, [driverDeskFilter, driverSearch, snapshot]);
+    return (snapshot?.drivers ?? []).filter((driver) => matchesDriverDeskFilter(driver, driverDeskFilter));
+  }, [driverDeskFilter, snapshot]);
 
   const selectedDeskDriver =
     driverDeskRows.find((driver) => driver.driverId === selectedDeskDriverId) ??
     driverById.get(selectedDeskDriverId ?? -1) ??
     driverDeskRows[0] ??
-    snapshot?.drivers[0] ??
+    snapshot?.drivers?.[0] ??
     null;
+  const visibleDriverDeskRows = driverDeskRows.filter((driver) => driver.driverId !== selectedDeskDriver?.driverId);
+
+  const routeDeskRows = useMemo(() => {
+    return (routeDesk?.routes ?? []).map((route) => ({
+      ...route,
+      driverName: driverById.get(route.driverId)?.name ?? `Driver ${route.driverId}`
+    }));
+  }, [driverById, routeDesk]);
+
+  const selectedRouteLoad =
+    snapshot?.pendingLoads.find((load) => load.loadId === routeCreateForm.loadId) ?? null;
 
   const visibleDrafts = useMemo(() => {
-    return (monitorFeed?.drafts ?? [])
-      .filter((draft) => !dismissedDraftIds.includes(draft.id))
-      .map((draft) => {
-        const override = draftOverrides[draft.id];
-        return override
-          ? {
-              ...draft,
-              voiceScript: override.voiceScript,
-              customerSms: override.customerSms
-            }
-          : draft;
-      });
-  }, [dismissedDraftIds, draftOverrides, monitorFeed]);
+    return monitorFeed?.drafts ?? [];
+  }, [monitorFeed]);
+
+  const openDraft =
+    visibleDrafts.find((draft) => draft.id === selectedAlertDraftId) ??
+    visibleDrafts[0] ??
+    null;
 
   const activeTrip = useMemo(() => {
     if (!snapshot) {
       return null;
     }
-    if (visibleDrafts[0]) {
-      return snapshot.activeTrips.find((trip) => trip.tripId === visibleDrafts[0].tripId) ?? null;
+    if (openDraft) {
+      return snapshot.activeTrips.find((trip) => trip.tripId === openDraft.tripId) ?? null;
     }
     return snapshot.activeTrips.find((trip) => trip.status !== "on_track") ?? snapshot.activeTrips[0] ?? null;
-  }, [snapshot, visibleDrafts]);
-
-  const readyDrivers = (snapshot?.drivers ?? [])
-    .filter((driver) => driver.hosStatus === "fresh" && !driver.activeTripId)
-    .slice(0, 6);
+  }, [openDraft, snapshot]);
 
   const restRiskDrivers = (snapshot?.drivers ?? [])
-    .filter((driver) => driver.hosStatus === "must_rest" || driver.hosRemainingMin < 120)
-    .slice(0, 4);
+    .filter((driver) => driver.hosRemainingMin < 120);
 
   const complianceItems = (snapshot?.drivers ?? [])
     .flatMap((driver) =>
@@ -729,11 +682,34 @@ export function DispatchWorkstation({
         driver,
         flag
       }))
-    )
-    .slice(0, 4);
+    );
+
+  const maintenanceTrips = (snapshot?.activeTrips ?? [])
+    .filter((trip) => trip.status === "long_idle");
+
+  const priorityQueueRows = useMemo(() => {
+    return [
+      ...complianceItems.map(({ driver, flag }) => ({
+        type: "compliance" as const,
+        key: `${driver.driverId}-${flag.kind}`,
+        driver,
+        flag
+      })),
+      ...restRiskDrivers.map((driver) => ({
+        type: "rest" as const,
+        key: `rest-${driver.driverId}`,
+        driver
+      })),
+      ...maintenanceTrips.map((trip) => ({
+        type: "maintenance" as const,
+        key: `maintenance-${trip.tripId}`,
+        trip,
+        driver: driverById.get(trip.driverId) ?? null
+      }))
+    ];
+  }, [complianceItems, driverById, maintenanceTrips, restRiskDrivers]);
 
   const monitoringRows = monitorFeed?.decisionLog.slice(0, 6) ?? [];
-  const openDraft = visibleDrafts[0] ?? null;
 
   useEffect(() => {
     if (driverDeskRows.length === 0) {
@@ -749,21 +725,92 @@ export function DispatchWorkstation({
   }, [driverDeskRows, selectedDeskDriverId]);
 
   useEffect(() => {
-    if (!openDraft || isEditingDraft) {
+    if (visibleDrafts.length === 0) {
+      setSelectedAlertDraftId(null);
+      setIsAlertPopupMinimized(false);
       return;
     }
 
-    const override = draftOverrides[openDraft.id];
-    setDraftEditor({
-      voiceScript: override?.voiceScript ?? openDraft.voiceScript,
-      customerSms: override?.customerSms ?? openDraft.customerSms
-    });
-  }, [draftOverrides, isEditingDraft, openDraft]);
+    if (!selectedAlertDraftId || !visibleDrafts.some((draft) => draft.id === selectedAlertDraftId)) {
+      setSelectedAlertDraftId(visibleDrafts[0].id);
+    }
+  }, [selectedAlertDraftId, visibleDrafts]);
+
+  useEffect(() => {
+    if (!snapshot) {
+      return;
+    }
+
+    const firstDriver = snapshot.drivers?.[0];
+    const firstPendingLoad = snapshot.pendingLoads?.[0];
+
+    setRouteCreateForm((current) => ({
+      driverId: current.driverId || String(firstDriver?.driverId ?? ""),
+      loadId: current.loadId || String(firstPendingLoad?.loadId ?? ""),
+      status: current.status
+    }));
+  }, [snapshot]);
+
+  async function handleCreateRoute() {
+    if (!routeCreateForm.driverId || !routeCreateForm.loadId) {
+      setRouteDeskMessage("Pick a driver and a load before creating a route.");
+      return;
+    }
+
+    setIsSavingRoute(true);
+    setRouteDeskMessage(null);
+
+    try {
+      const response = await fetch("/api/routes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          driverId: Number(routeCreateForm.driverId),
+          loadId: routeCreateForm.loadId,
+          status: routeCreateForm.status
+        } satisfies RouteDeskCreateRequest)
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error((payload as { message?: string }).message ?? "Unable to create route.");
+      }
+
+      setRouteDeskMessage(`Route ${(payload as RouteDeskItem).tripId} created and saved.`);
+      await refreshAll(true);
+    } catch (error) {
+      setRouteDeskMessage(error instanceof Error ? error.message : "Unable to create route.");
+    } finally {
+      setIsSavingRoute(false);
+    }
+  }
+
+  async function handleDeleteRoute(tripId: string) {
+    setDeletingRouteTripId(tripId);
+    setRouteDeskMessage(null);
+
+    try {
+      const response = await fetch(`/api/routes/${encodeURIComponent(tripId)}`, {
+        method: "DELETE"
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error((payload as { message?: string }).message ?? "Unable to delete route.");
+      }
+
+      setRouteDeskMessage(`Route ${tripId} removed from the database.`);
+      await refreshAll(true);
+    } catch (error) {
+      setRouteDeskMessage(error instanceof Error ? error.message : "Unable to delete route.");
+    } finally {
+      setDeletingRouteTripId(null);
+    }
+  }
 
   async function handleAnalyzeLoad() {
     setIsAnalyzing(true);
     setAssignmentFeedback(null);
     setPendingDispatchConfirmation(null);
+    setBackhaulOpen(false);
     try {
       const result = await readAgentStream(pasteInput);
       setCopilotSummary(result.finalPayload?.text ?? result.summary);
@@ -778,6 +825,13 @@ export function DispatchWorkstation({
       setSelectedReturnLoadId(topBackhaul?.returnLoad.loadId ?? null);
       setActiveStage("load_assignment");
     } catch (error) {
+      setCopilotSummary("");
+      setParsedLoad(null);
+      setScores([]);
+      setBackhauls([]);
+      setBackhaulDriverId(null);
+      setSelectedDriverId(null);
+      setSelectedReturnLoadId(null);
       setAssignmentFeedback(error instanceof Error ? error.message : "Load analysis failed.");
     } finally {
       setIsAnalyzing(false);
@@ -798,6 +852,7 @@ export function DispatchWorkstation({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             outboundLoadId: parsedLoad.loadId,
+            outboundLoad: parsedLoad,
             driverId: selectedScore.driverId
           })
         });
@@ -830,6 +885,7 @@ export function DispatchWorkstation({
         body: JSON.stringify({
           driverId: selectedScore.driverId,
           loadId: parsedLoad.loadId,
+          load: parsedLoad,
           ...(returnLoadId ? { returnLoadId } : {})
         })
       });
@@ -887,20 +943,6 @@ export function DispatchWorkstation({
     }
   }
 
-  async function handleLoadAdvancedShowcase() {
-    setIsLoadingAdvancedShowcase(true);
-    try {
-      const response = await fetch("/api/demo/advanced-ranking", { cache: "no-store" });
-      const payload = (await response.json()) as DemoAdvancedRankingResponse;
-      setAdvancedShowcase(payload);
-      setAdvancedShowcaseError(null);
-    } catch (error) {
-      setAdvancedShowcaseError(error instanceof Error ? error.message : "Advanced showcase failed to load.");
-    } finally {
-      setIsLoadingAdvancedShowcase(false);
-    }
-  }
-
   async function handlePlayVoice(draft: MonitorDraftView) {
     try {
       setAudioStatus("Preparing voice alert...");
@@ -949,40 +991,6 @@ export function DispatchWorkstation({
     }
   }
 
-  function handleStartDraftEdit() {
-    if (!openDraft) {
-      return;
-    }
-
-    setDraftEditor({
-      voiceScript: openDraft.voiceScript,
-      customerSms: openDraft.customerSms
-    });
-    setIsEditingDraft(true);
-  }
-
-  function handleSaveDraftEdit() {
-    if (!openDraft) {
-      return;
-    }
-
-    setDraftOverrides((current) => ({
-      ...current,
-      [openDraft.id]: {
-        voiceScript: draftEditor.voiceScript.trim() || openDraft.voiceScript,
-        customerSms: draftEditor.customerSms.trim() || openDraft.customerSms
-      }
-    }));
-    setIsEditingDraft(false);
-    setAssignmentFeedback("Draft edits saved in the workstation preview.");
-  }
-
-  function handleDismissDraft(draftId: string) {
-    setDismissedDraftIds((current) => (current.includes(draftId) ? current : [...current, draftId]));
-    setIsEditingDraft(false);
-    setAssignmentFeedback("Alert dismissed from the desk. Refresh the feed to bring it back.");
-  }
-
   async function runOperatorAction(body: Record<string, unknown>, nextStage?: WorkstationStage) {
     setIsOperatorRunning(true);
     try {
@@ -1001,11 +1009,7 @@ export function DispatchWorkstation({
         setSelectedDeskDriverId(null);
         setSelectedReturnLoadId(null);
         setBackhaulOpen(false);
-        setAdvancedShowcase(null);
         setPendingDispatchConfirmation(null);
-        setDismissedDraftIds([]);
-        setDraftOverrides({});
-        setIsEditingDraft(false);
       }
 
       if (nextStage) {
@@ -1043,15 +1047,10 @@ export function DispatchWorkstation({
     [activeStage, snapshot, activeTrip, openDraft, parsedLoad, selectedScore, selectedBackhaul, backhaulOpen, driverById]
   );
 
-  const activeStageTabs: Array<{ stage: WorkstationStage; description: string }> = [
-    { stage: "morning_triage", description: "7:00 AM shift start" },
-    { stage: "load_assignment", description: "9:00 AM assignment" },
-    { stage: "trip_monitoring", description: "In-transit intervention" }
-  ];
-
   const monitoringHeadline = openDraft
     ? `Urgent: ${openDraft.trigger.replace(/_/g, " ")} on ${openDraft.tripId}`
     : "No open intervention drafts";
+  const canAnalyzeLoad = pasteInput.trim().length > 0;
 
   const topCandidate = scores.find((score) => !score.eliminated) ?? null;
   const selectedCandidate = selectedScore ?? topCandidate;
@@ -1090,9 +1089,9 @@ export function DispatchWorkstation({
         }
       }[selectedMetricKey]
     : null;
-  const workstationStyle = {
-    "--workstation-panel-width": `${panelWidth}px`
-  } as CSSProperties;
+  const liveSummary = snapshot
+    ? `Fleet sync ${formatTime(snapshot.fetchedAtMs)} • ${formatCountLabel(snapshot.drivers.length, "driver")} • ${formatCountLabel(routeDesk?.routes.length ?? 0, "route")} in DB`
+    : "Syncing fleet data";
 
   function handlePanelResizeStart(event: ReactPointerEvent<HTMLButtonElement>) {
     panelResizeStartRef.current = {
@@ -1104,124 +1103,26 @@ export function DispatchWorkstation({
   }
 
   return (
-    <div className="bg-shell h-screen overflow-hidden">
-      <div
-        className="grid h-screen grid-cols-[72px_var(--workstation-panel-width)_minmax(0,1fr)] grid-rows-[var(--navpro-header-height)_1fr] overflow-hidden max-[1024px]:grid-cols-1 max-[1024px]:grid-rows-[var(--navpro-header-height)_auto_auto]"
-        style={workstationStyle}
-      >
-        <header className="col-span-full flex h-[80px] items-center justify-between border-b border-[color:var(--navpro-border-soft)] bg-white px-8">
-          <div className="flex items-center gap-8">
-            <div className="flex items-center">
-              <span className="leading-none text-[24px] font-bold tracking-tight text-[#214cba]">NavPro Co-Dispatch</span>
-            </div>
-
-            <nav className="hidden items-center gap-2 md:flex">
-              {headerNavItems.map((item) => {
-                const isActive =
-                  activeStage === item.stage || (item.stage === "load_assignment" && activeStage === "backhaul_review");
-
-                return (
-                  <TopNavButton
-                    key={item.stage}
-                    label={item.label}
-                    active={isActive}
-                    onClick={() => setActiveStage(item.stage)}
-                  />
-                );
-              })}
-            </nav>
-          </div>
-
-          <div className="flex items-center gap-4">
-            <div className="hidden items-center gap-2 rounded-lg border border-[color:var(--navpro-border-soft)] bg-[color:var(--navpro-bg-input)] px-4 py-3.5 text-[12px] md:flex">
-              <div className="rounded-full bg-[#E7F0FF] px-3 py-1 font-semibold uppercase tracking-[0.08em] text-[#214cba]">
-                Live workstation
-              </div>
-              <div className="text-[color:var(--navpro-text-muted)]">
-                {snapshot
-                  ? `Fleet sync ${formatTime(snapshot.fetchedAtMs)} • ${snapshot.drivers.length} drivers`
-                  : "Syncing fleet data"}
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={() => void refreshAll(true)}
-              className="hidden rounded-lg border border-[color:var(--navpro-border-soft)] bg-[color:var(--navpro-bg-input)] px-4 py-3.5 text-[13px] font-semibold text-[color:var(--navpro-text-muted)] md:block"
-            >
-              {isRefreshing ? "Syncing..." : "Refresh"}
-            </button>
-            <div className="grid h-10 w-10 place-items-center rounded-full bg-[#b5c4ff] text-xs font-bold text-[#214cba] ring-2 ring-white">
-              TC
-            </div>
-          </div>
-        </header>
-
-        <aside className="row-start-2 border-r border-[color:var(--navpro-border-soft)] bg-[color:var(--navpro-bg-rail)] max-[1024px]:hidden">
-            <div className="flex h-full flex-col">
-              <div className="flex-1 py-4">
-                <RailButton active={activeStage === "morning_triage"} label="Dash" glyph="dashboard" onClick={() => setActiveStage("morning_triage")} />
-                <RailButton
-                  active={activeStage === "load_assignment" || activeStage === "backhaul_review"}
-                label="Map"
-                glyph="map"
-                onClick={() => setActiveStage("load_assignment")}
-                />
-                <RailButton label="Loads" glyph="truck" onClick={() => setActiveStage("load_assignment")} />
-                <RailButton label="Drivers" glyph="drivers" onClick={() => setActiveStage("morning_triage")} />
-                <RailButton label="Stats" glyph="analytics" onClick={() => setActiveStage("trip_monitoring")} />
-              </div>
-            </div>
-        </aside>
-
-        <section className="navpro-scrollbar relative row-start-2 overflow-y-auto border-r border-[color:var(--navpro-border-soft)] bg-[color:var(--navpro-bg-panel)] max-[1024px]:border-r-0">
-          <div className="sticky top-0 z-10 border-b border-[color:var(--navpro-border-soft)] bg-white/95 px-6 pb-4 pt-6 backdrop-blur-sm">
-            <div className="mb-2 flex items-center justify-between gap-3">
-              <div>
-                <div className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[color:var(--navpro-text-subtle)]">Dispatch desk</div>
-                <div className="mt-1 text-[26px] font-bold tracking-tight text-[color:var(--navpro-text-strong)]">
-                  {workstationStageLabels[activeStage]}
-                </div>
-                <div className="mt-1 text-[13px] text-[color:var(--navpro-text-muted)]">
-                  {activeStageTabs.find((tab) =>
-                    tab.stage === activeStage || (activeStage === "backhaul_review" && tab.stage === "load_assignment")
-                  )?.description ?? "Dispatcher workstation"}
-                </div>
-              </div>
-
-              <div className="hidden items-center gap-2 md:flex">
-                <div className="rounded-full border border-[color:var(--navpro-border-soft)] px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-muted)]">
-                  {snapshot ? `${snapshot.activeTrips.length} live trips` : "Syncing trips"}
-                </div>
-              </div>
-            </div>
-
-            <div className="flex gap-0 border-b border-[color:var(--navpro-border-soft)]">
-              {activeStageTabs.map((tab) => {
-                const isActive = activeStage === tab.stage || (tab.stage === "load_assignment" && activeStage === "backhaul_review");
-                return (
-                  <button
-                    key={tab.stage}
-                    type="button"
-                    onClick={() => setActiveStage(tab.stage)}
-                    className={[
-                      "flex-1 border-b-[3px] px-2 py-3 text-center text-[14px] font-semibold",
-                      isActive
-                        ? "border-[color:var(--navpro-text-primary)] text-[color:var(--navpro-text-primary)]"
-                        : "border-transparent text-[color:var(--navpro-text-subtle)]"
-                    ].join(" ")}
-                  >
-                    {workstationStageLabels[tab.stage]}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
+    <AppShell
+      currentStage={activeStage}
+      currentDeskPanel={deskPanelView}
+      activeNavItem={activeTopBarNav}
+      liveSummary={liveSummary}
+      isRefreshing={isRefreshing}
+      onRefresh={() => void refreshAll(true)}
+      onDeskPanelChange={handleTopBarDeskPanelChange}
+      onStageChange={handleTopBarStageChange}
+    >
+      <div className="flex h-full min-h-0 flex-col gap-6 xl:flex-row">
+        <section
+          className="navpro-scrollbar relative overflow-y-auto rounded-[28px] border border-[color:var(--navpro-border-soft)] bg-[color:var(--navpro-bg-panel)] shadow-[0_24px_70px_rgba(16,32,51,0.08)] xl:h-full xl:min-h-0 xl:shrink-0"
+          style={viewportWidth >= 1280 ? { width: panelWidth } : undefined}
+        >
           <button
             type="button"
             aria-label="Resize left panel"
             onPointerDown={handlePanelResizeStart}
-            className="absolute right-0 top-0 z-20 hidden h-full w-3 translate-x-1/2 cursor-col-resize items-center justify-center max-[1024px]:hidden lg:flex"
+            className="absolute right-0 top-0 z-20 hidden h-full w-3 translate-x-1/2 cursor-col-resize items-center justify-center xl:flex"
           >
             <span className="h-20 w-[3px] rounded-full bg-[color:var(--navpro-border-soft)] shadow-[0_0_0_1px_rgba(255,255,255,0.7)] transition-colors hover:bg-[#214cba]" />
           </button>
@@ -1229,255 +1130,342 @@ export function DispatchWorkstation({
           <div className="space-y-5 px-6 py-5 text-[13px]">
             {activeStage === "morning_triage" ? (
               <>
-                <section className="rounded-xl border border-[color:var(--navpro-border-soft)] bg-[color:var(--navpro-bg-muted)] p-5">
-                  <div className="mb-3 flex items-center gap-2 text-[12px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-muted)]">
-                    <Glyph name="spark" className="h-4 w-4 text-[#214cba]" />
-                    Fleet brief
-                  </div>
-                  <div className="rounded-xl bg-white px-4 py-4 shadow-[0_4px_12px_rgba(21,27,41,0.03)]">
-                    <div className="text-[15px] font-semibold leading-6 text-[color:var(--navpro-text-strong)]">
-                      {snapshot?.morningBrief.headline ?? "Loading fleet morning brief..."}
-                    </div>
-                    <div className="mt-3 grid grid-cols-4 gap-2 text-[11px]">
-                      <div className="rounded-lg bg-[#E7F0FF] px-3 py-2 text-[#214cba]">
-                        <div className="font-bold">{snapshot?.morningBrief.readyCount ?? "--"}</div>
-                        <div className="uppercase tracking-[0.08em]">Ready</div>
-                      </div>
-                      <div className="rounded-lg bg-[#FFF3D7] px-3 py-2 text-[#996B00]">
-                        <div className="font-bold">{snapshot?.morningBrief.restSoonCount ?? "--"}</div>
-                        <div className="uppercase tracking-[0.08em]">Rest</div>
-                      </div>
-                      <div className="rounded-lg bg-[#FFE5E2] px-3 py-2 text-[#BA1A1A]">
-                        <div className="font-bold">{snapshot?.morningBrief.complianceFlagCount ?? "--"}</div>
-                        <div className="uppercase tracking-[0.08em]">Flags</div>
-                      </div>
-                      <div className="rounded-lg bg-[#E9EDFF] px-3 py-2 text-[#485CC7]">
-                        <div className="font-bold">{snapshot?.morningBrief.inMaintenanceCount ?? "--"}</div>
-                        <div className="uppercase tracking-[0.08em]">Idle</div>
-                      </div>
-                    </div>
-                  </div>
-                </section>
-
-                <section className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-muted)]">
-                      Priority queue
-                    </div>
-                    <div className="rounded-full bg-[#FFE5E2] px-3 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-[#BA1A1A]">
-                      {complianceItems.length + restRiskDrivers.length} flags
-                    </div>
-                  </div>
-
-                  {complianceItems.slice(0, 2).map(({ driver, flag }) => (
-                    <div key={`${driver.driverId}-${flag.kind}`} className="rounded-xl border border-[color:var(--navpro-border-soft)] bg-white p-4 shadow-[0_4px_12px_rgba(21,27,41,0.03)]">
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="flex items-center gap-3">
-                          <Avatar name={driver.name} tone="blue" />
-                          <div>
-                            <div className="text-sm font-bold text-[color:var(--navpro-text-strong)]">{driver.name}</div>
-                            <div className="text-xs text-[color:var(--navpro-text-muted)]">
-                              Unit #{driver.driverId} • {driver.homeBase.city}
-                            </div>
-                          </div>
-                        </div>
-                        <div className="rounded-sm bg-[#FFE5E2] px-2 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-[#BA1A1A]">
-                          Compliance
-                        </div>
-                      </div>
-                      <div className="mt-3 rounded-lg bg-[color:var(--navpro-bg-muted)] px-3 py-2 text-[12px] text-[color:var(--navpro-text-muted)]">
-                        {flag.message}
-                      </div>
-                    </div>
-                  ))}
-
-                  {restRiskDrivers.slice(0, 2).map((driver) => (
-                    <div key={driver.driverId} className="rounded-xl border border-[color:var(--navpro-border-soft)] bg-white p-4">
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="flex items-center gap-3">
-                          <Avatar name={driver.name} tone="amber" />
-                          <div>
-                            <div className="text-sm font-bold text-[color:var(--navpro-text-strong)]">{driver.name}</div>
-                            <div className="text-xs text-[color:var(--navpro-text-muted)]">
-                              Rest risk in {formatHours(driver.hosRemainingMin)}
-                            </div>
-                          </div>
-                        </div>
-                        <div className="rounded-sm bg-[#FFF3D7] px-2 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-[#996B00]">
-                          HOS alert
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </section>
-
                 <section className="rounded-xl border border-[color:var(--navpro-border-soft)] bg-white p-5">
                   <div className="flex items-start justify-between gap-3">
                     <div>
                       <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-muted)]">
-                        Driver desk
+                        Operations desk
                       </div>
                       <div className="mt-1 text-sm font-bold text-[color:var(--navpro-text-strong)]">
-                        Search the live roster and inspect the selected seat before dispatch.
+                        {deskPanelView === "drivers"
+                          ? "Inspect the live roster and selected seat before dispatch."
+                          : "Review every saved route, then create or remove routes directly from the database."}
                       </div>
                     </div>
                     <div className="rounded-full bg-[color:var(--navpro-bg-muted)] px-3 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-[color:var(--navpro-text-muted)]">
-                      {driverDeskRows.length} shown
+                      {deskPanelView === "drivers" ? `${driverDeskRows.length} shown` : `${routeDeskRows.length} routes`}
                     </div>
                   </div>
 
-                  <div className="mt-4 rounded-xl border border-[color:var(--navpro-border-soft)] bg-[color:var(--navpro-bg-input)] px-3 py-3">
-                    <div className="flex items-center gap-2 text-[color:var(--navpro-text-muted)]">
-                      <Glyph name="search" className="h-4 w-4" />
-                      <input
-                        value={driverSearch}
-                        onChange={(event) => setDriverSearch(event.target.value)}
-                        placeholder="Search driver, unit, city, or phone"
-                        aria-label="Search drivers"
-                        className="w-full bg-transparent text-[13px] outline-none placeholder:text-[color:var(--navpro-text-subtle)]"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {driverDeskFilters.map((filter) => {
-                      const count =
-                        filter.key === "all"
-                          ? snapshot?.drivers.length ?? 0
-                          : (snapshot?.drivers ?? []).filter((driver) => matchesDriverDeskFilter(driver, filter.key)).length;
-                      const isActive = driverDeskFilter === filter.key;
-
-                      return (
-                        <button
-                          key={filter.key}
-                          type="button"
-                          onClick={() => setDriverDeskFilter(filter.key)}
-                          className={[
-                            "rounded-full border px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.08em]",
-                            isActive
-                              ? "border-[#214cba] bg-[#E7F0FF] text-[#214cba]"
-                              : "border-[color:var(--navpro-border-soft)] bg-white text-[color:var(--navpro-text-muted)]"
-                          ].join(" ")}
-                        >
-                          {filter.label} {count}
-                        </button>
-                      );
-                    })}
-                  </div>
-
-                  {selectedDeskDriver ? (
-                    <div className="mt-4 rounded-xl border border-[#c7d7ff] bg-[#f7faff] p-4">
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="flex items-center gap-3">
-                          <Avatar name={selectedDeskDriver.name} tone="blue" />
-                          <div>
-                            <div className="text-base font-bold text-[color:var(--navpro-text-strong)]">{selectedDeskDriver.name}</div>
-                            <div className="mt-1 text-xs text-[color:var(--navpro-text-muted)]">
-                              Unit #{selectedDeskDriver.driverId} • {selectedDeskDriver.homeBase.city} • {selectedDeskDriver.phone}
-                            </div>
-                          </div>
-                        </div>
-                        <div className={`rounded-full px-2 py-1 text-[10px] font-bold uppercase tracking-[0.08em] ${getDriverDeskStatus(selectedDeskDriver).tone}`}>
-                          {getDriverDeskStatus(selectedDeskDriver).label}
-                        </div>
-                      </div>
-
-                      <div className="mt-3 grid grid-cols-2 gap-2 text-[12px] xl:grid-cols-4">
-                        <div className="rounded-lg bg-white px-3 py-3">
-                          <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-subtle)]">HOS</div>
-                          <div className="mt-1 text-sm font-bold text-[color:var(--navpro-text-strong)]">{formatHours(selectedDeskDriver.hosRemainingMin)}</div>
-                          <div className="mt-1 text-[11px] text-[color:var(--navpro-text-muted)]">{getDriverDeskStatus(selectedDeskDriver).detail}</div>
-                        </div>
-                        <div className="rounded-lg bg-white px-3 py-3">
-                          <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-subtle)]">GPS ping</div>
-                          <div className="mt-1 text-sm font-bold text-[color:var(--navpro-text-strong)]">{formatTime(selectedDeskDriver.currentLocation.updatedAtMs)}</div>
-                          <div className="mt-1 text-[11px] text-[color:var(--navpro-text-muted)]">
-                            {selectedDeskDriver.currentLocation.lat.toFixed(2)}, {selectedDeskDriver.currentLocation.lng.toFixed(2)}
-                          </div>
-                        </div>
-                        <div className="rounded-lg bg-white px-3 py-3">
-                          <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-subtle)]">Trip</div>
-                          <div className="mt-1 text-sm font-bold text-[color:var(--navpro-text-strong)]">{selectedDeskDriver.activeTripId ?? "Available"}</div>
-                          <div className="mt-1 text-[11px] text-[color:var(--navpro-text-muted)]">
-                            {selectedDeskDriver.complianceFlags.length} flag{selectedDeskDriver.complianceFlags.length === 1 ? "" : "s"}
-                          </div>
-                        </div>
-                        <div className="rounded-lg bg-white px-3 py-3">
-                          <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-subtle)]">Miles delta</div>
-                          <div className="mt-1 text-sm font-bold text-[color:var(--navpro-text-strong)]">
-                            {selectedDeskDriver.performance
-                              ? formatPerformanceDelta(selectedDeskDriver.performance.actualMiles, selectedDeskDriver.performance.scheduleMiles)
-                              : "No trip history"}
-                          </div>
-                          <div className="mt-1 text-[11px] text-[color:var(--navpro-text-muted)]">
-                            {selectedDeskDriver.performance
-                              ? `${formatNumber(selectedDeskDriver.performance.actualMiles)} actual • ${formatNumber(selectedDeskDriver.performance.scheduleMiles)} planned`
-                              : "Performance feed not loaded"}
-                          </div>
-                        </div>
-                      </div>
-
-                      {selectedDeskDriver.complianceFlags.length > 0 ? (
-                        <div className="mt-3 space-y-2">
-                          {selectedDeskDriver.complianceFlags.map((flag) => (
-                            <div key={`${selectedDeskDriver.driverId}-${flag.kind}`} className="rounded-lg bg-[#fff5f4] px-3 py-3 text-[12px] text-[#7d3a32]">
-                              <span className="font-bold">{flag.kind.replace(/_/g, " ")}:</span> {flag.message}
-                            </div>
-                          ))}
-                        </div>
-                      ) : null}
+                  {routeDeskMessage ? (
+                    <div className="mt-4 rounded-xl border border-[#c7d7ff] bg-[#f7faff] px-4 py-3 text-[12px] text-[#214cba]">
+                      {routeDeskMessage}
                     </div>
                   ) : (
-                    <div className="mt-4 rounded-xl border border-dashed border-[color:var(--navpro-border-soft)] px-4 py-5 text-[12px] text-[color:var(--navpro-text-muted)]">
-                      No drivers match the current search and filter.
-                    </div>
+                    routeDeskError && deskPanelView === "routes" ? (
+                      <div className="mt-4 rounded-xl border border-[#ffe1e1] bg-[#fff7f7] px-4 py-3 text-[12px] text-[#a33939]">
+                        {routeDeskError}
+                      </div>
+                    ) : null
                   )}
 
-                  <div className="mt-4 space-y-2">
-                    {driverDeskRows.slice(0, 6).map((driver) => {
-                      const status = getDriverDeskStatus(driver);
-                      const isActive = selectedDeskDriver?.driverId === driver.driverId;
-                      return (
-                        <button
-                          key={driver.driverId}
-                          type="button"
-                          onClick={() => setSelectedDeskDriverId(driver.driverId)}
-                          className={[
-                            "w-full rounded-xl border p-4 text-left transition-colors",
-                            isActive
-                              ? "border-[#214cba] bg-[#f7faff]"
-                              : "border-[color:var(--navpro-border-soft)] bg-[color:var(--navpro-bg-muted)] hover:bg-white"
-                          ].join(" ")}
-                        >
+                  {deskPanelView === "drivers" ? (
+                    <>
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        {driverDeskFilters.map((filter) => {
+                          const count =
+                            filter.key === "all"
+                              ? snapshot?.drivers.length ?? 0
+                              : (snapshot?.drivers ?? []).filter((driver) => matchesDriverDeskFilter(driver, filter.key)).length;
+                          const isActive = driverDeskFilter === filter.key;
+
+                          return (
+                            <button
+                              key={filter.key}
+                              type="button"
+                              onClick={() => setDriverDeskFilter(filter.key)}
+                              className={[
+                                "rounded-full border px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.08em]",
+                                isActive
+                                  ? "border-[#214cba] bg-[#E7F0FF] text-[#214cba]"
+                                  : "border-[color:var(--navpro-border-soft)] bg-white text-[color:var(--navpro-text-muted)]"
+                              ].join(" ")}
+                            >
+                              {filter.label} {count}
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      {selectedDeskDriver ? (
+                        <div className="mt-4 rounded-xl border border-[#c7d7ff] bg-[#f7faff] p-4">
                           <div className="flex items-start justify-between gap-3">
                             <div className="flex items-center gap-3">
-                              <Avatar name={driver.name} tone={driver.activeTripId ? "teal" : "violet"} />
+                              <Avatar name={selectedDeskDriver.name} tone="blue" />
                               <div>
-                                <div className="text-sm font-bold text-[color:var(--navpro-text-strong)]">{driver.name}</div>
+                                <div className="text-base font-bold text-[color:var(--navpro-text-strong)]">{selectedDeskDriver.name}</div>
                                 <div className="mt-1 text-xs text-[color:var(--navpro-text-muted)]">
-                                  Unit #{driver.driverId} • {driver.homeBase.city} • GPS {formatTime(driver.currentLocation.updatedAtMs)}
+                                  Unit #{selectedDeskDriver.driverId} • {selectedDeskDriver.homeBase.city} • {selectedDeskDriver.phone}
                                 </div>
                               </div>
                             </div>
-                            <div className={`rounded-full px-2 py-1 text-[10px] font-bold uppercase tracking-[0.08em] ${status.tone}`}>
-                              {status.label}
+                            <div className={`rounded-full px-2 py-1 text-[10px] font-bold uppercase tracking-[0.08em] ${getDriverDeskStatus(selectedDeskDriver).tone}`}>
+                              {getDriverDeskStatus(selectedDeskDriver).label}
                             </div>
                           </div>
-                          <div className="mt-3 grid grid-cols-3 gap-2 text-[11px]">
-                            <div className="rounded-lg bg-white px-3 py-2 text-[color:var(--navpro-text-muted)]">
-                              <span className="font-semibold text-[color:var(--navpro-text-strong)]">HOS</span> {formatHours(driver.hosRemainingMin)}
+
+                          <div className="mt-3 grid grid-cols-2 gap-2 text-[12px] xl:grid-cols-4">
+                            <div className="rounded-lg bg-white px-3 py-3">
+                              <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-subtle)]">HOS</div>
+                              <div className="mt-1 text-sm font-bold text-[color:var(--navpro-text-strong)]">{formatHours(selectedDeskDriver.hosRemainingMin)}</div>
+                              <div className="mt-1 text-[11px] text-[color:var(--navpro-text-muted)]">{getDriverDeskStatus(selectedDeskDriver).detail}</div>
                             </div>
-                            <div className="rounded-lg bg-white px-3 py-2 text-[color:var(--navpro-text-muted)]">
-                              <span className="font-semibold text-[color:var(--navpro-text-strong)]">Flags</span> {driver.complianceFlags.length}
+                            <div className="rounded-lg bg-white px-3 py-3">
+                              <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-subtle)]">GPS ping</div>
+                              <div className="mt-1 text-sm font-bold text-[color:var(--navpro-text-strong)]">{formatTime(selectedDeskDriver.currentLocation.updatedAtMs)}</div>
+                              <div className="mt-1 text-[11px] text-[color:var(--navpro-text-muted)]">
+                                {selectedDeskDriver.currentLocation.lat.toFixed(2)}, {selectedDeskDriver.currentLocation.lng.toFixed(2)}
+                              </div>
                             </div>
-                            <div className="rounded-lg bg-white px-3 py-2 text-[color:var(--navpro-text-muted)]">
-                              <span className="font-semibold text-[color:var(--navpro-text-strong)]">Seat</span> {driver.activeTripId ? "Assigned" : "Open"}
+                            <div className="rounded-lg bg-white px-3 py-3">
+                              <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-subtle)]">Trip</div>
+                              <div className="mt-1 text-sm font-bold text-[color:var(--navpro-text-strong)]">{selectedDeskDriver.activeTripId ?? "Available"}</div>
+                              <div className="mt-1 text-[11px] text-[color:var(--navpro-text-muted)]">
+                                {selectedDeskDriver.complianceFlags.length} flag{selectedDeskDriver.complianceFlags.length === 1 ? "" : "s"}
+                              </div>
+                            </div>
+                            <div className="rounded-lg bg-white px-3 py-3">
+                              <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-subtle)]">Miles delta</div>
+                              <div className="mt-1 text-sm font-bold text-[color:var(--navpro-text-strong)]">
+                                {selectedDeskDriver.performance
+                                  ? formatPerformanceDelta(selectedDeskDriver.performance.actualMiles, selectedDeskDriver.performance.scheduleMiles)
+                                  : "No trip history"}
+                              </div>
+                              <div className="mt-1 text-[11px] text-[color:var(--navpro-text-muted)]">
+                                {selectedDeskDriver.performance
+                                  ? `${formatNumber(selectedDeskDriver.performance.actualMiles)} actual • ${formatNumber(selectedDeskDriver.performance.scheduleMiles)} planned`
+                                  : "Performance feed not loaded"}
+                              </div>
                             </div>
                           </div>
+
+                          {selectedDeskDriver.complianceFlags.length > 0 ? (
+                            <div className="mt-3 space-y-2">
+                              {selectedDeskDriver.complianceFlags.map((flag) => (
+                                <div key={`${selectedDeskDriver.driverId}-${flag.kind}`} className="rounded-lg bg-[#fff5f4] px-3 py-3 text-[12px] text-[#7d3a32]">
+                                  <span className="font-bold">{flag.kind.replace(/_/g, " ")}:</span> {flag.message}
+                                </div>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : (
+                        <div className="mt-4 rounded-xl border border-dashed border-[color:var(--navpro-border-soft)] px-4 py-5 text-[12px] text-[color:var(--navpro-text-muted)]">
+                          No driver records are available from the fleet snapshot.
+                        </div>
+                      )}
+
+                      <div className="mt-4 space-y-2">
+                        {visibleDriverDeskRows.slice(0, 6).map((driver) => {
+                          const status = getDriverDeskStatus(driver);
+                          const isActive = selectedDeskDriver?.driverId === driver.driverId;
+                          return (
+                            <button
+                              key={driver.driverId}
+                              type="button"
+                              onClick={() => setSelectedDeskDriverId(driver.driverId)}
+                              className={[
+                                "w-full rounded-xl border p-4 text-left transition-colors",
+                                isActive
+                                  ? "border-[#214cba] bg-[#f7faff]"
+                                  : "border-[color:var(--navpro-border-soft)] bg-[color:var(--navpro-bg-muted)] hover:bg-white"
+                              ].join(" ")}
+                            >
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="flex items-center gap-3">
+                                  <Avatar name={driver.name} tone={driver.activeTripId ? "teal" : "violet"} />
+                                  <div>
+                                    <div className="text-sm font-bold text-[color:var(--navpro-text-strong)]">{driver.name}</div>
+                                    <div className="mt-1 text-xs text-[color:var(--navpro-text-muted)]">
+                                      Unit #{driver.driverId} • {driver.homeBase.city} • GPS {formatTime(driver.currentLocation.updatedAtMs)}
+                                    </div>
+                                  </div>
+                                </div>
+                                <div className={`rounded-full px-2 py-1 text-[10px] font-bold uppercase tracking-[0.08em] ${status.tone}`}>
+                                  {status.label}
+                                </div>
+                              </div>
+                              <div className="mt-3 grid grid-cols-3 gap-2 text-[11px]">
+                                <div className="rounded-lg bg-white px-3 py-2 text-[color:var(--navpro-text-muted)]">
+                                  <span className="font-semibold text-[color:var(--navpro-text-strong)]">HOS</span> {formatHours(driver.hosRemainingMin)}
+                                </div>
+                                <div className="rounded-lg bg-white px-3 py-2 text-[color:var(--navpro-text-muted)]">
+                                  <span className="font-semibold text-[color:var(--navpro-text-strong)]">Flags</span> {driver.complianceFlags.length}
+                                </div>
+                                <div className="rounded-lg bg-white px-3 py-2 text-[color:var(--navpro-text-muted)]">
+                                  <span className="font-semibold text-[color:var(--navpro-text-strong)]">Seat</span> {driver.activeTripId ? "Assigned" : "Open"}
+                                </div>
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,320px)_minmax(0,1fr)]">
+                      <div className="rounded-xl border border-[color:var(--navpro-border-soft)] bg-[color:var(--navpro-bg-muted)] p-4">
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-muted)]">
+                          Create route
+                        </div>
+                        <div className="mt-3 space-y-3">
+                          <label className="block">
+                            <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-muted)]">
+                              Driver
+                            </div>
+                            <select
+                              value={routeCreateForm.driverId}
+                              onChange={(event) =>
+                                setRouteCreateForm((current) => ({
+                                  ...current,
+                                  driverId: event.target.value
+                                }))
+                              }
+                              className="w-full rounded-xl border border-[color:var(--navpro-border-soft)] bg-white px-3 py-2.5 text-[13px] text-[color:var(--navpro-text-strong)] outline-none"
+                            >
+                              {(snapshot?.drivers ?? []).map((driver) => (
+                                <option key={driver.driverId} value={driver.driverId}>
+                                  {driver.name} • #{driver.driverId}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+
+                          <label className="block">
+                            <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-muted)]">
+                              Load
+                            </div>
+                            <select
+                              value={routeCreateForm.loadId}
+                              onChange={(event) =>
+                                setRouteCreateForm((current) => ({
+                                  ...current,
+                                  loadId: event.target.value
+                                }))
+                              }
+                              className="w-full rounded-xl border border-[color:var(--navpro-border-soft)] bg-white px-3 py-2.5 text-[13px] text-[color:var(--navpro-text-strong)] outline-none"
+                            >
+                              {(snapshot?.pendingLoads ?? []).map((load) => (
+                                <option key={load.loadId} value={load.loadId}>
+                                  {load.loadId} • {load.origin.city} to {load.destination.city}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+
+                          <label className="block">
+                            <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-muted)]">
+                              Status
+                            </div>
+                            <select
+                              value={routeCreateForm.status}
+                              onChange={(event) =>
+                                setRouteCreateForm((current) => ({
+                                  ...current,
+                                  status: event.target.value as NonNullable<RouteDeskCreateRequest["status"]>
+                                }))
+                              }
+                              className="w-full rounded-xl border border-[color:var(--navpro-border-soft)] bg-white px-3 py-2.5 text-[13px] text-[color:var(--navpro-text-strong)] outline-none"
+                            >
+                              {routeDeskStatusOptions.map((statusOption) => (
+                                <option key={statusOption.value} value={statusOption.value}>
+                                  {statusOption.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        </div>
+
+                        {selectedRouteLoad ? (
+                          <div className="mt-4 rounded-xl border border-[color:var(--navpro-border-soft)] bg-white px-3 py-3 text-[12px] text-[color:var(--navpro-text-muted)]">
+                            <div className="font-semibold text-[color:var(--navpro-text-strong)]">
+                              {selectedRouteLoad.origin.city}, {selectedRouteLoad.origin.state} to {selectedRouteLoad.destination.city}, {selectedRouteLoad.destination.state}
+                            </div>
+                            <div className="mt-1">{formatMoney(selectedRouteLoad.rateUsd)} • {selectedRouteLoad.customer ?? "Unassigned broker"}</div>
+                            <div className="mt-1">Pickup window ends {formatDateTime(selectedRouteLoad.pickupEndMs)}</div>
+                          </div>
+                        ) : null}
+
+                        <button
+                          type="button"
+                          onClick={() => void handleCreateRoute()}
+                          disabled={isSavingRoute || !routeCreateForm.driverId || !routeCreateForm.loadId}
+                          className="mt-4 w-full rounded-xl bg-[linear-gradient(135deg,#214cba_0%,#4066d4_100%)] px-4 py-3 text-[12px] font-bold text-white shadow-[0_4px_14px_rgba(33,76,186,0.25)] disabled:opacity-60"
+                        >
+                          {isSavingRoute ? "Creating route..." : "Create route in DB"}
                         </button>
-                      );
-                    })}
-                  </div>
+                      </div>
+
+                      <div className="space-y-3">
+                        {routeDeskRows.length === 0 ? (
+                          <div className="rounded-xl border border-dashed border-[color:var(--navpro-border-soft)] px-4 py-5 text-[12px] text-[color:var(--navpro-text-muted)]">
+                            No saved routes yet. Create the first route from the load board.
+                          </div>
+                        ) : (
+                          routeDeskRows.map((route) => (
+                            <div key={route.tripId} className="rounded-xl border border-[color:var(--navpro-border-soft)] bg-[color:var(--navpro-bg-muted)] p-4">
+                              <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div>
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <div className="text-sm font-bold text-[color:var(--navpro-text-strong)]">{route.tripId}</div>
+                                    <div className={`rounded-full px-2 py-1 text-[10px] font-bold uppercase tracking-[0.08em] ${getRouteStatusTone(route.status)}`}>
+                                      {route.status.replace(/_/g, " ")}
+                                    </div>
+                                  </div>
+                                  <div className="mt-1 text-[12px] text-[color:var(--navpro-text-muted)]">{route.routeContext}</div>
+                                </div>
+
+                                <button
+                                  type="button"
+                                  onClick={() => void handleDeleteRoute(route.tripId)}
+                                  disabled={deletingRouteTripId === route.tripId}
+                                  className="rounded-lg border border-[#f1c7c7] bg-white px-3 py-2 text-[11px] font-semibold text-[#a33939] disabled:opacity-60"
+                                >
+                                  {deletingRouteTripId === route.tripId ? "Removing..." : "Delete"}
+                                </button>
+                              </div>
+
+                              <div className="mt-3 grid gap-2 text-[11px] sm:grid-cols-2 xl:grid-cols-4">
+                                <div className="rounded-lg bg-white px-3 py-3 text-[color:var(--navpro-text-muted)]">
+                                  <div className="font-semibold text-[color:var(--navpro-text-strong)]">Driver</div>
+                                  <div className="mt-1">{route.driverName} • #{route.driverId}</div>
+                                </div>
+                                <div className="rounded-lg bg-white px-3 py-3 text-[color:var(--navpro-text-muted)]">
+                                  <div className="font-semibold text-[color:var(--navpro-text-strong)]">Load</div>
+                                  <div className="mt-1">{route.loadId}</div>
+                                  <div className="mt-1">{route.commodity ?? "General freight"}</div>
+                                </div>
+                                <div className="rounded-lg bg-white px-3 py-3 text-[color:var(--navpro-text-muted)]">
+                                  <div className="font-semibold text-[color:var(--navpro-text-strong)]">ETA / miles</div>
+                                  <div className="mt-1">{formatDateTime(route.etaMs)}</div>
+                                  <div className="mt-1">{route.remainingMiles != null ? `${formatNumber(route.remainingMiles)} mi remaining` : "Distance unavailable"}</div>
+                                </div>
+                                <div className="rounded-lg bg-white px-3 py-3 text-[color:var(--navpro-text-muted)]">
+                                  <div className="font-semibold text-[color:var(--navpro-text-strong)]">Sync</div>
+                                  <div className="mt-1">Seen {formatDateTime(route.lastSeenAtMs)}</div>
+                                  <div className="mt-1">{route.routePointCount} route points</div>
+                                </div>
+                              </div>
+
+                              <div className="mt-3 grid gap-2 text-[11px] sm:grid-cols-2">
+                                <div className="rounded-lg bg-white px-3 py-3 text-[color:var(--navpro-text-muted)]">
+                                  <div className="font-semibold text-[color:var(--navpro-text-strong)]">Current GPS</div>
+                                  <div className="mt-1">{route.currentLoc.lat.toFixed(2)}, {route.currentLoc.lng.toFixed(2)}</div>
+                                  <div className="mt-1">{route.origin ? `${route.origin.city}, ${route.origin.state}` : "Origin unavailable"}</div>
+                                </div>
+                                <div className="rounded-lg bg-white px-3 py-3 text-[color:var(--navpro-text-muted)]">
+                                  <div className="font-semibold text-[color:var(--navpro-text-strong)]">Delivery</div>
+                                  <div className="mt-1">
+                                    {route.destination ? `${route.destination.city}, ${route.destination.state}` : "Destination unavailable"}
+                                  </div>
+                                  <div className="mt-1">{route.rateUsd != null ? formatMoney(route.rateUsd) : "Rate unavailable"}</div>
+                                </div>
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </section>
 
                 <section className="rounded-xl border border-[color:var(--navpro-border-soft)] bg-[color:var(--navpro-bg-muted)] p-4">
@@ -1499,7 +1487,6 @@ export function DispatchWorkstation({
                     <button
                       type="button"
                       onClick={() => {
-                        setPasteInput(DEMO_LOAD_TEXT);
                         setActiveStage("load_assignment");
                       }}
                       className="rounded-lg bg-[linear-gradient(135deg,#214cba_0%,#4066d4_100%)] px-4 py-3 text-[12px] font-bold text-white shadow-[0_4px_14px_rgba(33,76,186,0.25)]"
@@ -1521,7 +1508,7 @@ export function DispatchWorkstation({
                     <button
                       type="button"
                       onClick={() => void handleAnalyzeLoad()}
-                      disabled={isAnalyzing}
+                      disabled={isAnalyzing || !canAnalyzeLoad}
                       className="rounded-lg bg-[linear-gradient(135deg,#214cba_0%,#4066d4_100%)] px-3 py-2 text-[12px] font-semibold text-white shadow-[0_4px_12px_rgba(33,76,186,0.2)] disabled:opacity-60"
                     >
                       {isAnalyzing ? "Analyzing..." : "Re-run analysis"}
@@ -1805,123 +1792,6 @@ export function DispatchWorkstation({
                     </section>
                   ) : null}
                 </section>
-
-                <section className="rounded-xl border border-[color:var(--navpro-border-soft)] bg-white p-5">
-                  <div className="mb-3 flex items-center justify-between gap-3">
-                    <div>
-                      <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-muted)]">
-                        Advanced engine showcase
-                      </div>
-                      <div className="mt-1 text-sm font-bold text-[color:var(--navpro-text-strong)]">
-                        Seeded operational signals for POI, POD, BOL, ELD, fuel, HOS, ETA, and performance
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => void handleLoadAdvancedShowcase()}
-                      disabled={isLoadingAdvancedShowcase}
-                      className="rounded-lg border border-[color:var(--navpro-border-soft)] bg-[color:var(--navpro-bg-input)] px-3 py-2 text-[12px] font-semibold text-[#214cba] disabled:opacity-60"
-                    >
-                      {isLoadingAdvancedShowcase ? "Refreshing..." : "Refresh showcase"}
-                    </button>
-                  </div>
-
-                  <div className="rounded-xl bg-[color:var(--navpro-bg-muted)] px-4 py-3 text-[12px] leading-6 text-[color:var(--navpro-text-muted)]">
-                    {advancedShowcase?.explanation ??
-                      "This panel shows seeded operational evidence stored in SQLite and ranked by the same decision engine used in the workstation."}
-                  </div>
-
-                  {advancedShowcase ? (
-                    <div className="mt-4 space-y-3">
-                      {advancedShowcase.rankedDrivers.map((driver) => (
-                        (() => {
-                          const hosBreakdown = driver.breakdown.find((item) => item.key === "hos");
-                          return (
-                        <div
-                          key={`advanced-${driver.driverId}`}
-                          className={[
-                            "rounded-xl border p-4",
-                            driver.recommended
-                              ? "border-[#c7d7ff] bg-[#f5f9ff]"
-                              : driver.eliminated
-                                ? "border-[#ffd9d6] bg-[#fff7f6]"
-                                : "border-[color:var(--navpro-border-soft)] bg-white"
-                          ].join(" ")}
-                        >
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="flex items-start gap-3">
-                              <div className="grid h-9 w-9 place-items-center rounded-lg bg-[color:var(--navpro-bg-muted)] text-sm font-bold text-[color:var(--navpro-text-strong)]">
-                                {driver.rank}
-                              </div>
-                              <div>
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <div className="text-sm font-bold text-[color:var(--navpro-text-strong)]">
-                                    {driver.driverName}
-                                  </div>
-                                  {driver.recommended ? (
-                                    <div className="rounded-full bg-[#214cba] px-2 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-white">
-                                      Recommended
-                                    </div>
-                                  ) : null}
-                                  {driver.eliminated ? (
-                                    <div className="rounded-full bg-[#BA1A1A] px-2 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-white">
-                                      Eliminated
-                                    </div>
-                                  ) : null}
-                                </div>
-                                <div className="mt-1 text-xs text-[color:var(--navpro-text-muted)]">
-                                  {driver.signals.deadheadMiles} mi deadhead • {formatHours(driver.signals.etaBufferMin)} ETA buffer • home {driver.signals.eldViolationCount} ELD violations
-                                </div>
-                              </div>
-                            </div>
-                            <div className="rounded-full bg-[color:var(--navpro-bg-muted)] px-3 py-1 text-[11px] font-bold uppercase tracking-[0.08em] text-[color:var(--navpro-text-muted)]">
-                              {driver.score}/100
-                            </div>
-                          </div>
-
-                          <div className="mt-3 grid grid-cols-2 gap-2 lg:grid-cols-4">
-                            <ShowcaseMetric
-                              label="HOS"
-                              value={hosBreakdown?.rawValue ?? "n/a"}
-                              detail="legal drive-time fit"
-                            />
-                            <ShowcaseMetric label="Fuel" value={formatMoney(driver.signals.fuelCostUsd)} detail={`${driver.signals.fuelEfficiencyMpg.toFixed(1)} mpg`} />
-                            <ShowcaseMetric label="POD" value={formatPercent(driver.signals.podOnTimeRate)} detail="on-time proof" />
-                            <ShowcaseMetric label="BOL" value={formatPercent(driver.signals.bolAccuracyRate)} detail="doc accuracy" />
-                            <ShowcaseMetric label="ELD" value={formatPercent(driver.signals.eldComplianceScore)} detail={`${driver.signals.eldViolationCount} violations`} />
-                            <ShowcaseMetric label="POI fuel" value={`${driver.signals.poiFuelStopMiles} mi`} detail="nearest stop" />
-                            <ShowcaseMetric label="POI parking" value={`${driver.signals.poiSafeParkingMiles} mi`} detail="safe parking" />
-                            <ShowcaseMetric label="Performance" value={`${driver.signals.driverPerformanceScore}/100`} detail="recent ops" />
-                          </div>
-
-                          <div className="mt-3 rounded-lg bg-[color:var(--navpro-bg-muted)] px-3 py-3 text-[12px] leading-6 text-[color:var(--navpro-text-muted)]">
-                            <span className="font-semibold text-[color:var(--navpro-text-strong)]">Why ranked here:</span> {driver.eliminationReason ?? driver.summary}
-                          </div>
-
-                          <div className="mt-3 grid gap-2 md:grid-cols-3">
-                            {driver.breakdown.slice(0, 6).map((item) => (
-                              <div key={`${driver.driverId}-${item.key}`} className="rounded-lg border border-[color:var(--navpro-border-soft)] bg-white px-3 py-2">
-                                <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-subtle)]">
-                                  {item.label}
-                                </div>
-                                <div className="mt-1 text-sm font-bold text-[color:var(--navpro-text-strong)]">
-                                  {item.rawValue}
-                                </div>
-                                <div className="mt-1 text-[11px] text-[#214cba]">+{item.contribution.toFixed(1)}</div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                          );
-                        })()
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="mt-4 text-[12px] text-[color:var(--navpro-text-muted)]">
-                      {advancedShowcaseError ?? "Loading advanced engine showcase..."}
-                    </div>
-                  )}
-                </section>
               </>
             ) : null}
 
@@ -1942,8 +1812,37 @@ export function DispatchWorkstation({
                     </button>
                   </div>
                   <div className="text-base font-bold text-[color:var(--navpro-text-strong)]">{monitoringHeadline}</div>
-                  <div className="mt-2 text-[12px] leading-6 text-[color:var(--navpro-text-muted)]">
-                    {openDraft?.customerSms ?? "No intervention package is open right now."}
+                  <div className="mt-3 space-y-2 text-[12px] leading-6 text-[color:var(--navpro-text-muted)]">
+                    {visibleDrafts.length > 0 ? (
+                      visibleDrafts.map((draft) => (
+                        <button
+                          key={draft.id}
+                          type="button"
+                          onClick={() => {
+                            setSelectedAlertDraftId(draft.id);
+                            setIsAlertPopupMinimized(false);
+                          }}
+                          className={[
+                            "w-full rounded-lg border px-3 py-3 text-left transition-colors",
+                            openDraft?.id === draft.id
+                              ? "border-[#f1b3ab] bg-white"
+                              : "border-[#ffd9d6] bg-white/70 hover:bg-white"
+                          ].join(" ")}
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="font-semibold text-[color:var(--navpro-text-strong)]">
+                              {draft.tripId} • {draft.trigger.replace(/_/g, " ")}
+                            </div>
+                            <div className="text-[11px] text-[color:var(--navpro-text-subtle)]">
+                              {formatDateTime(draft.createdAtMs)}
+                            </div>
+                          </div>
+                          <div className="mt-1">{draft.customerSms}</div>
+                        </button>
+                      ))
+                    ) : (
+                      <div>No intervention package is open right now.</div>
+                    )}
                   </div>
                 </section>
 
@@ -1954,13 +1853,40 @@ export function DispatchWorkstation({
                     </div>
                     {openDraft ? (
                       <div className="rounded-full bg-white px-3 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-[#214cba]">
-                        Execute / Edit / Dismiss
+                        Execute
                       </div>
                     ) : null}
                   </div>
                   {openDraft ? (
                     <div className="space-y-4">
+                      {visibleDrafts.length > 1 ? (
+                        <div className="flex flex-wrap gap-2">
+                          {visibleDrafts.map((draft) => (
+                            <button
+                              key={draft.id}
+                              type="button"
+                              onClick={() => setSelectedAlertDraftId(draft.id)}
+                              className={[
+                                "rounded-full border px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.08em]",
+                                openDraft.id === draft.id
+                                  ? "border-[#214cba] bg-[#E7F0FF] text-[#214cba]"
+                                  : "border-[color:var(--navpro-border-soft)] bg-white text-[color:var(--navpro-text-muted)]"
+                              ].join(" ")}
+                            >
+                              {draft.tripId}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
+
                       <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void handlePlayVoice(openDraft)}
+                          className="rounded-lg border border-[color:var(--navpro-border-soft)] bg-white px-4 py-2.5 text-[12px] font-semibold text-[color:var(--navpro-text-muted)]"
+                        >
+                          Play voice
+                        </button>
                         <button
                           type="button"
                           onClick={() => void handleExecuteIntervention(openDraft.id)}
@@ -1969,20 +1895,6 @@ export function DispatchWorkstation({
                         >
                           {isExecuting ? "Executing..." : "Execute now"}
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => (isEditingDraft ? handleSaveDraftEdit() : handleStartDraftEdit())}
-                          className="rounded-lg border border-[color:var(--navpro-border-soft)] bg-white px-4 py-2.5 text-[12px] font-semibold text-[color:var(--navpro-text-muted)]"
-                        >
-                          {isEditingDraft ? "Save edit" : "Edit draft"}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDismissDraft(openDraft.id)}
-                          className="rounded-lg border border-[#ffd9d6] bg-white px-4 py-2.5 text-[12px] font-semibold text-[#BA1A1A]"
-                        >
-                          Dismiss
-                        </button>
                       </div>
 
                       <div className="rounded-xl bg-white p-4 shadow-[0_4px_12px_rgba(21,27,41,0.03)]">
@@ -1990,17 +1902,9 @@ export function DispatchWorkstation({
                           <Glyph name="voice" className="h-4 w-4 text-[#214cba]" />
                           Voice script
                         </div>
-                        {isEditingDraft ? (
-                          <textarea
-                            value={draftEditor.voiceScript}
-                            onChange={(event) => setDraftEditor((current) => ({ ...current, voiceScript: event.target.value }))}
-                            rows={4}
-                            aria-label="Edit voice script"
-                            className="w-full resize-none rounded-lg border border-[color:var(--navpro-border-input)] bg-[color:var(--navpro-bg-input)] px-3 py-3 text-[12px] leading-6 text-[color:var(--navpro-text)] outline-none"
-                          />
-                        ) : (
-                          <div className="text-[12px] leading-6 text-[color:var(--navpro-text-muted)]">{openDraft.voiceScript}</div>
-                        )}
+                        <div className="text-[12px] leading-6 text-[color:var(--navpro-text-muted)]">
+                          {cleanVoiceScriptForDisplay(openDraft.voiceScript)}
+                        </div>
                         {openDraft.audioSource ? (
                           <div className="mt-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-[#214cba]">
                             Audio source: {openDraft.audioSource}
@@ -2029,80 +1933,14 @@ export function DispatchWorkstation({
                       </div>
                       <div className="rounded-xl bg-white p-4 shadow-[0_4px_12px_rgba(21,27,41,0.03)]">
                         <div className="mb-2 text-sm font-semibold text-[color:var(--navpro-text-strong)]">Drafted SMS to customer</div>
-                        {isEditingDraft ? (
-                          <textarea
-                            value={draftEditor.customerSms}
-                            onChange={(event) => setDraftEditor((current) => ({ ...current, customerSms: event.target.value }))}
-                            rows={4}
-                            aria-label="Edit customer SMS"
-                            className="w-full resize-none rounded-lg border border-[color:var(--navpro-border-input)] bg-[color:var(--navpro-bg-input)] px-3 py-3 text-[12px] leading-6 text-[color:var(--navpro-text)] outline-none"
-                          />
-                        ) : (
-                          <div className="rounded-lg bg-[color:var(--navpro-bg-muted)] px-3 py-3 text-[12px] italic leading-6 text-[color:var(--navpro-text-muted)]">
-                            “{openDraft.customerSms}”
-                          </div>
-                        )}
-                      </div>
-                      {isEditingDraft ? (
-                        <div className="flex gap-2">
-                          <button
-                            type="button"
-                            onClick={() => handleSaveDraftEdit()}
-                            className="rounded-lg bg-[linear-gradient(135deg,#214cba_0%,#4066d4_100%)] px-4 py-2.5 text-[12px] font-semibold text-white shadow-[0_4px_12px_rgba(33,76,186,0.2)]"
-                          >
-                            Save draft
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setIsEditingDraft(false);
-                              setDraftEditor({
-                                voiceScript: openDraft.voiceScript,
-                                customerSms: openDraft.customerSms
-                              });
-                            }}
-                            className="rounded-lg border border-[color:var(--navpro-border-soft)] bg-white px-4 py-2.5 text-[12px] font-semibold text-[color:var(--navpro-text-muted)]"
-                          >
-                            Cancel edit
-                          </button>
+                        <div className="rounded-lg bg-[color:var(--navpro-bg-muted)] px-3 py-3 text-[12px] italic leading-6 text-[color:var(--navpro-text-muted)]">
+                          “{openDraft.customerSms}”
                         </div>
-                      ) : null}
+                      </div>
                     </div>
                   ) : (
                     <div className="text-[12px] text-[color:var(--navpro-text-muted)]">No intervention drafts are open.</div>
                   )}
-                </section>
-
-                <section className="rounded-xl border border-[color:var(--navpro-border-soft)] bg-white p-4">
-                  <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-muted)]">
-                    Voice approval
-                  </div>
-                  <div className="flex flex-col items-center justify-center gap-3 rounded-xl bg-[color:var(--navpro-bg-muted)] px-4 py-6">
-                    <button
-                      type="button"
-                      onClick={() => (openDraft ? void handlePlayVoice(openDraft) : undefined)}
-                      className="relative grid h-16 w-16 place-items-center rounded-full bg-[linear-gradient(135deg,#214cba_0%,#4066d4_100%)] text-white shadow-[0_0_20px_rgba(33,76,186,0.35)]"
-                    >
-                      <span className="absolute inset-0 animate-ping rounded-full bg-[#214cba]/30" />
-                      <Glyph name="voice" className="relative h-8 w-8" />
-                    </button>
-                    <div className="text-sm font-semibold text-[#214cba]">
-                      Say <span className="font-bold text-[color:var(--navpro-text-strong)]">“Execute”</span> to approve relay.
-                    </div>
-                    {openDraft?.matchedCommand ? (
-                      <div className="text-[12px] text-[color:var(--navpro-text-muted)]">
-                        Last command: {openDraft.matchedCommand}
-                      </div>
-                    ) : null}
-                    <button
-                      type="button"
-                      onClick={() => (openDraft ? void handleExecuteIntervention(openDraft.id) : undefined)}
-                      disabled={!openDraft || isExecuting}
-                      className="rounded-lg border border-[color:var(--navpro-border-soft)] bg-white px-4 py-2 text-[12px] font-semibold text-[color:var(--navpro-text-muted)] disabled:opacity-60"
-                    >
-                      {isExecuting ? "Executing..." : "Execute from drawer"}
-                    </button>
-                  </div>
                 </section>
 
                 <section className="rounded-xl border border-[color:var(--navpro-border-soft)] bg-white">
@@ -2130,15 +1968,15 @@ export function DispatchWorkstation({
               </>
             ) : null}
 
-            {(snapshotError || monitorError || assignmentFeedback || audioStatus || advancedShowcaseError) ? (
+            {(snapshotError || monitorError || assignmentFeedback || audioStatus) ? (
               <section className="rounded-xl border border-[color:var(--navpro-border-soft)] bg-white px-4 py-3 text-[12px] text-[color:var(--navpro-text-muted)]">
-                {[snapshotError, monitorError, assignmentFeedback, audioStatus, advancedShowcaseError].filter(Boolean).join(" • ")}
+                {[snapshotError, monitorError, assignmentFeedback, audioStatus].filter(Boolean).join(" • ")}
               </section>
             ) : null}
           </div>
         </section>
 
-        <section className="relative row-start-2 overflow-hidden bg-[#dfe7f3] max-[1024px]:min-h-[620px]">
+        <section className="relative min-h-[620px] overflow-hidden rounded-[28px] border border-[color:var(--navpro-border-soft)] bg-[#dfe7f3] shadow-[0_24px_70px_rgba(16,32,51,0.08)] xl:h-full xl:min-h-0 xl:flex-1">
           <InteractiveDispatchMap
             ref={mapRef}
             viewport={mapPresentation.viewport}
@@ -2149,7 +1987,12 @@ export function DispatchWorkstation({
 
           <div className="pointer-events-auto absolute left-6 top-6 z-20 flex items-center gap-3">
             <div className="glass-panel rounded-lg border border-white/60 px-4 py-2 text-[14px] font-semibold text-[color:var(--navpro-text-strong)] shadow-[0_8px_32px_rgba(21,27,41,0.08)]">
-              {activeStage === "morning_triage" && snapshot?.morningBrief.headline}
+              {activeStage === "morning_triage" &&
+                (snapshot
+                  ? snapshot.sourceMode === "live"
+                    ? snapshot.morningBrief.headline
+                    : "Synthetic mode: live fleet brief hidden"
+                  : "Loading fleet data...")}
               {activeStage === "load_assignment" &&
                 (parsedLoad ? `Live network view • ${parsedLoad.origin.city} → ${parsedLoad.destination.city}` : "Live network view")}
               {activeStage === "trip_monitoring" && monitoringHeadline}
@@ -2265,37 +2108,97 @@ export function DispatchWorkstation({
           ) : null}
 
           {openDraft ? (
-            <div className="pointer-events-auto absolute right-6 top-24 z-30 w-[360px] rounded-xl border border-[#ffd9d6] bg-white shadow-[0_16px_40px_rgba(21,27,41,0.16)]">
-              <div className="border-b border-[#ffd9d6] bg-[#fff5f4] px-4 py-3">
-                <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-[#BA1A1A]">
-                  <Glyph name="warning" className="h-4 w-4" />
-                  Live alert
-                </div>
-                <div className="mt-1 text-[18px] font-bold text-[color:var(--navpro-text-strong)]">Truck risk detected</div>
+            isAlertPopupMinimized ? (
+              <div className="pointer-events-auto absolute right-6 top-24 z-30">
+                <button
+                  type="button"
+                  aria-label="Expand alert popup"
+                  onClick={() => setIsAlertPopupMinimized(false)}
+                  className="rounded-2xl border border-[#ffd9d6] bg-white px-4 py-3 text-left shadow-[0_16px_40px_rgba(21,27,41,0.16)]"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="rounded-full bg-[#fff5f4] p-2 text-[#BA1A1A]">
+                      <Glyph name="warning" className="h-4 w-4" />
+                    </div>
+                    <div>
+                      <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#BA1A1A]">
+                        {formatCountLabel(visibleDrafts.length, "alert")}
+                      </div>
+                      <div className="text-sm font-bold text-[color:var(--navpro-text-strong)]">{openDraft.tripId}</div>
+                    </div>
+                  </div>
+                </button>
               </div>
-              <div className="space-y-3 px-4 py-4 text-[13px] leading-6 text-[color:var(--navpro-text-muted)]">
-                <div>{openDraft.voiceScript}</div>
-                <div className="rounded-lg bg-[color:var(--navpro-bg-muted)] px-3 py-3">
-                  Customer SMS: {openDraft.customerSms}
+            ) : (
+              <div className="pointer-events-auto absolute right-6 top-24 z-30 w-[360px] rounded-xl border border-[#ffd9d6] bg-white shadow-[0_16px_40px_rgba(21,27,41,0.16)]">
+                <div className="border-b border-[#ffd9d6] bg-[#fff5f4] px-4 py-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-[#BA1A1A]">
+                        <Glyph name="warning" className="h-4 w-4" />
+                        Live alert
+                      </div>
+                      <div className="mt-1 text-[18px] font-bold text-[color:var(--navpro-text-strong)]">Truck risk detected</div>
+                      <div className="mt-1 text-[11px] text-[color:var(--navpro-text-muted)]">
+                        {formatCountLabel(visibleDrafts.length, "open alert")}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      aria-label="Minimize alert popup"
+                      onClick={() => setIsAlertPopupMinimized(true)}
+                      className="rounded-xl border border-[#f1d0cb] bg-white px-3 py-1.5 text-[16px] font-bold leading-none text-[color:var(--navpro-text-muted)]"
+                    >
+                      -
+                    </button>
+                  </div>
                 </div>
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => void handlePlayVoice(openDraft)}
-                    className="flex-1 rounded-lg bg-[linear-gradient(135deg,#214cba_0%,#4066d4_100%)] px-3 py-2 text-[12px] font-semibold text-white shadow-[0_4px_12px_rgba(33,76,186,0.22)]"
-                  >
-                    Play voice
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setActiveStage("trip_monitoring")}
-                    className="rounded-lg border border-[color:var(--navpro-border-soft)] bg-white px-3 py-2 text-[12px] font-semibold text-[color:var(--navpro-text-muted)]"
-                  >
-                    Open action desk
-                  </button>
+                <div className="space-y-3 px-4 py-4 text-[13px] leading-6 text-[color:var(--navpro-text-muted)]">
+                  {visibleDrafts.length > 1 ? (
+                    <div className="flex flex-wrap gap-2">
+                      {visibleDrafts.map((draft) => (
+                        <button
+                          key={draft.id}
+                          type="button"
+                          onClick={() => setSelectedAlertDraftId(draft.id)}
+                          className={[
+                            "rounded-full border px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.08em]",
+                            openDraft.id === draft.id
+                              ? "border-[#BA1A1A] bg-[#fff5f4] text-[#BA1A1A]"
+                              : "border-[color:var(--navpro-border-soft)] bg-white text-[color:var(--navpro-text-muted)]"
+                          ].join(" ")}
+                        >
+                          {draft.tripId}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                  <div>{cleanVoiceScriptForDisplay(openDraft.voiceScript)}</div>
+                  <div className="rounded-lg bg-[color:var(--navpro-bg-muted)] px-3 py-3">
+                    Customer SMS: {openDraft.customerSms}
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void handlePlayVoice(openDraft)}
+                      className="flex-1 rounded-lg bg-[linear-gradient(135deg,#214cba_0%,#4066d4_100%)] px-3 py-2 text-[12px] font-semibold text-white shadow-[0_4px_12px_rgba(33,76,186,0.22)]"
+                    >
+                      Play voice
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedAlertDraftId(openDraft.id);
+                        setActiveStage("trip_monitoring");
+                      }}
+                      className="rounded-lg border border-[color:var(--navpro-border-soft)] bg-white px-3 py-2 text-[12px] font-semibold text-[color:var(--navpro-text-muted)]"
+                    >
+                      Open action desk
+                    </button>
+                  </div>
                 </div>
               </div>
-            </div>
+            )
           ) : null}
 
           {backhaulOpen && parsedLoad && selectedScore && selectedBackhaul ? (
@@ -2445,24 +2348,6 @@ export function DispatchWorkstation({
           ) : null}
         </section>
       </div>
-    </div>
-  );
-}
-
-function ShowcaseMetric({
-  label,
-  value,
-  detail
-}: {
-  label: string;
-  value: string;
-  detail: string;
-}) {
-  return (
-    <div className="rounded-lg border border-[color:var(--navpro-border-soft)] bg-[color:var(--navpro-bg-muted)] px-3 py-2">
-      <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-subtle)]">{label}</div>
-      <div className="mt-1 text-sm font-bold text-[color:var(--navpro-text-strong)]">{value}</div>
-      <div className="mt-1 text-[11px] text-[color:var(--navpro-text-muted)]">{detail}</div>
-    </div>
+    </AppShell>
   );
 }

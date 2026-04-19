@@ -1,16 +1,25 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { resetServerEnvForTests } from "@/config/env.server";
-import { fleetSnapshotSchema, assignmentResponseSchema, interventionDraftSchema } from "@/shared/schemas/contracts";
+import {
+  fleetSnapshotSchema,
+  assignmentResponseSchema,
+  interventionDraftSchema,
+  routeDeskItemSchema,
+  routeDeskResponseSchema
+} from "@/shared/schemas/contracts";
 import { getDb } from "@/server/db/client";
 import { GET as getFleetSnapshotRoute } from "@/app/api/fleet/snapshot/route";
 import { POST as createAssignmentRoute } from "@/app/api/fleet/assignments/route";
+import { GET as getRoutesRoute, POST as createRouteDeskRoute } from "@/app/api/routes/route";
+import { DELETE as deleteRouteDeskRoute } from "@/app/api/routes/[tripId]/route";
 import { POST as simulateRoute } from "@/app/api/dev/simulate/route";
 import { GET as monitorFeedRoute } from "@/app/api/monitor/feed/route";
 import { POST as executeInterventionRoute } from "@/app/api/monitor/interventions/execute/route";
 import { POST as monitorTickRoute } from "@/app/api/monitor/tick/route";
 import { POST as agentRoute } from "@/app/api/agent/route";
 import { POST as voiceSpeakRoute } from "@/app/api/voice/speak/route";
+import { resetDemoRuntimeForTests } from "@/server/runtime/demo-runtime";
 
 import { bootstrapBackendTests, closeDatabase, readJson, readSse } from "../helpers/backend";
 
@@ -21,6 +30,7 @@ describe.sequential("backend routes", () => {
 
   beforeEach(async () => {
     await bootstrapBackendTests();
+    resetDemoRuntimeForTests();
   });
 
   afterAll(async () => {
@@ -36,6 +46,7 @@ describe.sequential("backend routes", () => {
 
     expect(snapshot.drivers.length).toBeGreaterThanOrEqual(15);
     expect(snapshot.pendingLoads.length).toBeGreaterThan(0);
+    expect(snapshot.sourceMode).toBe("synthetic");
     expect(snapshot.morningBrief.readyCount).toBe(14);
     expect(snapshot.morningBrief.restSoonCount).toBe(3);
     expect(snapshot.morningBrief.complianceFlagCount).toBe(2);
@@ -78,6 +89,46 @@ describe.sequential("backend routes", () => {
     expect(logs.some((row) => (row.revenueRecoveredUsd ?? 0) > 0)).toBe(true);
     expect(mirroredTrips.some((trip) => trip.tripId === payload.tripId)).toBe(true);
     expect(mirroredTrips.some((trip) => trip.tripId === payload.returnTripId)).toBe(true);
+  });
+
+  it("creates, lists, and deletes db-backed routes from the route desk api", async () => {
+    const createRequest = new Request("http://localhost/api/routes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        driverId: 101,
+        loadId: "TL-DEMO-01",
+        status: "on_track"
+      })
+    });
+
+    const createResponse = await createRouteDeskRoute(createRequest);
+    const createdRoute = routeDeskItemSchema.parse(await readJson<unknown>(createResponse));
+
+    expect(createdRoute.driverId).toBe(101);
+    expect(createdRoute.loadId).toBe("TL-DEMO-01");
+    expect(createdRoute.routeContext).toContain("Phoenix");
+
+    const listResponse = await getRoutesRoute();
+    const listPayload = routeDeskResponseSchema.parse(await readJson<unknown>(listResponse));
+
+    expect(listPayload.routes.some((route) => route.tripId === createdRoute.tripId)).toBe(true);
+
+    const snapshotResponse = await getFleetSnapshotRoute();
+    const snapshot = fleetSnapshotSchema.parse(await readJson<unknown>(snapshotResponse));
+
+    expect(snapshot.activeTrips.some((trip) => trip.tripId === createdRoute.tripId)).toBe(true);
+
+    const deleteResponse = await deleteRouteDeskRoute(new Request(`http://localhost/api/routes/${createdRoute.tripId}`, {
+      method: "DELETE"
+    }), {
+      params: { tripId: createdRoute.tripId }
+    });
+    const deletePayload = await readJson<{ ok: boolean; tripId: string }>(deleteResponse);
+
+    expect(deletePayload.ok).toBe(true);
+    expect(deletePayload.tripId).toBe(createdRoute.tripId);
+    expect(await getDb().activeTripMirror.findUnique({ where: { tripId: createdRoute.tripId } })).toBeNull();
   });
 
   it("simulates an Act 3 breakdown and drafts one intervention", async () => {
@@ -146,6 +197,7 @@ describe.sequential("backend routes", () => {
 
     const voiceResponse = await voiceSpeakRoute(voiceRequest);
     const audioSource = voiceResponse.headers.get("X-Audio-Source");
+    const draftAfterVoice = await getDb().interventionDraft.findUnique({ where: { id: feed.drafts[0]?.id } });
 
     const executeRequest = new Request("http://localhost/api/monitor/interventions/execute", {
       method: "POST",
@@ -165,11 +217,13 @@ describe.sequential("backend routes", () => {
 
     expect(executePayload.ok).toBe(true);
     expect(audioSource).toBeTruthy();
+    expect(draftAfterVoice?.audioSource).toBe(audioSource);
     expect(updatedDraft?.audioSource).toBe(audioSource);
     expect(updatedDraft?.status).toBe("executed");
     expect(updatedDraft?.matchedCommand).toBe("execute");
     expect(mirroredTrip?.status).toBe("on_track");
     expect(mirroredTrip?.overrideReason).toBe("relay_executed");
+    expect(logs.some((row) => row.actionType === "voice_alert_played")).toBe(true);
     expect(logs.some((row) => row.actionType === "intervention_executed")).toBe(true);
     expect(logs.some((row) => (row.timeSavedMin ?? 0) > 0)).toBe(true);
   });
@@ -206,6 +260,35 @@ describe.sequential("backend routes", () => {
     expect(await db.interventionDraft.count()).toBe(0);
   });
 
+  it("clears synthetic demo persistence on the first api request after a restart", async () => {
+    const assignmentRequest = new Request("http://localhost/api/fleet/assignments", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        driverId: 101,
+        loadId: "TL-DEMO-01",
+        returnLoadId: "TL-BH-01"
+      })
+    });
+
+    const assignmentResponse = await createAssignmentRoute(assignmentRequest);
+    const assignment = assignmentResponseSchema.parse(await readJson<unknown>(assignmentResponse));
+
+    const db = getDb();
+    expect(await db.loadAssignment.count()).toBe(1);
+
+    resetDemoRuntimeForTests();
+
+    const snapshotResponse = await getFleetSnapshotRoute();
+    const snapshot = fleetSnapshotSchema.parse(await readJson<unknown>(snapshotResponse));
+
+    expect(snapshot.sourceMode).toBe("synthetic");
+    expect(await db.loadAssignment.count()).toBe(0);
+    expect(await db.decisionLog.count()).toBe(0);
+    expect(await db.interventionDraft.count()).toBe(0);
+    expect(snapshot.activeTrips.some((trip) => trip.tripId === assignment.tripId)).toBe(false);
+  });
+
   it("streams SSE events in tool-call to final order", async () => {
     const request = new Request("http://localhost/api/agent", {
       method: "POST",
@@ -223,6 +306,67 @@ describe.sequential("backend routes", () => {
     expect(types).toContain("tool_result");
     expect(types).toContain("token");
     expect(types.at(-1)).toBe("final");
+  });
+
+  it("wires LLM load extraction through the backend agent route when model keys exist", async () => {
+    process.env.GROQ_API_KEY = "test-groq-key";
+    process.env.GEMINI_API_KEY = "";
+    resetServerEnvForTests();
+
+    const originalFetch = global.fetch;
+    global.fetch = async (input, init) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("api.groq.com/openai/v1/chat/completions")) {
+        return Response.json({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  origin_city: "Phoenix",
+                  origin_state: "AZ",
+                  destination_city: "Denver",
+                  destination_state: "CO",
+                  pickup_day_offset: 1,
+                  pickup_hour_24: 8,
+                  pickup_minute: 0,
+                  pickup_window_hours: 4,
+                  rate_usd: 3200,
+                  weight_lbs: 38000,
+                  commodity: "Dry Van",
+                  customer: "Echo Global"
+                })
+              }
+            }
+          ]
+        });
+      }
+
+      return originalFetch(input as RequestInfo | URL, init);
+    };
+
+    try {
+      const request = new Request("http://localhost/api/agent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userMessage: "Echo Global can pay $3,200 on a dry van with 38,000 lbs from Phoenix over to Denver tomorrow at 8am."
+        })
+      });
+
+      const response = await agentRoute(request);
+      const events = await readSse(response);
+      const final = events.at(-1);
+
+      expect(final?.type).toBe("final");
+      expect(final?.payload?.parsedLoad?.destination?.city).toBe("Denver");
+      expect(final?.payload?.parsedLoad?.customer).toBe("Echo Global");
+      expect(final?.payload?.parsedLoad?.commodity).toBe("Dry Van");
+    } finally {
+      global.fetch = originalFetch;
+      process.env.GROQ_API_KEY = "";
+      process.env.GEMINI_API_KEY = "";
+      resetServerEnvForTests();
+    }
   });
 
   it("returns a grounded refusal when no safe demo assignment exists", async () => {

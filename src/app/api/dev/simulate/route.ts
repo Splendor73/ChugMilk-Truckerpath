@@ -1,6 +1,7 @@
 import { createRepositories } from "@/server/repositories";
 import { devSimulateRequestSchema } from "@/shared/schemas/contracts";
 import { fail, ok, readJson } from "@/server/core/http";
+import { ensureDemoRuntimeReady } from "@/server/runtime/demo-runtime";
 import { resetDemoState } from "@/features/demo/server/reset-demo-state";
 import { controlNavProScenario, queryTrips } from "@/server/integrations/navpro";
 
@@ -8,6 +9,7 @@ export const runtime = "nodejs";
 
 export async function POST(request: Request) {
   try {
+    await ensureDemoRuntimeReady();
     const input = await readJson(request, devSimulateRequestSchema);
     if (input.action === "reset") {
       await resetDemoState();

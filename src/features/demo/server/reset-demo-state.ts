@@ -1,7 +1,7 @@
 import { getDb } from "@/server/db/client";
 import { resetNavProScenario } from "@/server/integrations/navpro";
 
-export async function resetDemoState() {
+export async function clearDemoPersistence() {
   const db = getDb();
 
   await db.engineShowcaseDriver.deleteMany();
@@ -12,6 +12,9 @@ export async function resetDemoState() {
   await db.decisionLog.deleteMany();
 
   resetNavProScenario();
+}
 
+export async function resetDemoState() {
+  await clearDemoPersistence();
   return { ok: true as const };
 }

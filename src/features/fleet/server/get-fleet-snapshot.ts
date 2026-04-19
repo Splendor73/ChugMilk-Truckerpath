@@ -7,6 +7,7 @@ import type {
   FleetSnapshot,
   Load
 } from "@/shared/contracts";
+import { getFlags } from "@/config/flags";
 import { createRepositories } from "@/server/repositories";
 import { clamp, findCityCoordinates, haversineMiles } from "@/shared/utils/geo";
 import { nowMs } from "@/shared/utils/time";
@@ -511,6 +512,7 @@ function enrichDrivers(drivers: Driver[], activeTrips: ActiveTrip[]) {
 }
 
 async function fetchFleetSnapshotData() {
+  const flags = getFlags();
   const repositories = createRepositories();
   const pendingLoads = listLoads();
   const knownMarkets = buildKnownMarkets(pendingLoads);
@@ -525,6 +527,7 @@ async function fetchFleetSnapshotData() {
 
   return {
     fetchedAtMs: nowMs(),
+    sourceMode: flags.useSyntheticNavPro || flags.useNavProMock || !flags.hasLiveNavPro ? "synthetic" : "live",
     drivers: enrichedDrivers,
     activeTrips,
     pendingLoads,
