@@ -116,6 +116,19 @@ function formatDateTime(value: number) {
   }).format(value);
 }
 
+async function readResponseError(response: Response, fallback: string) {
+  try {
+    const payload = (await response.json()) as { message?: string };
+    return payload.message ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function shouldAutoResetDemoOnPageLoad() {
+  return process.env.NEXT_PUBLIC_AUTO_RESET_DEMO_ON_PAGE_LOAD === "true";
+}
+
 function getDriverDeskStatus(driver: Driver) {
   if (driver.hosStatus === "must_rest") {
     return {
@@ -739,21 +752,21 @@ export function DispatchWorkstation({
     await Promise.all([loadSnapshot(showRefresh), loadMonitorFeed(), loadRouteDesk()]);
   }
 
-  // On Vercel the server process is ephemeral, so we can't rely on "boot time"
-  // as the reset trigger like we do locally. Instead, treat a full page load
-  // as the demo reset signal: wipe the demo tables once, reseed from the
-  // synthetic NavPro source, then do the normal data pull. Subsequent
-  // monitor ticks will add fresh alerts on top of the clean state.
+  // Shared hosted environments use one database for every browser session, so
+  // auto-reset must stay opt-in. Otherwise one page load can invalidate the
+  // live alert ids another user is still acting on.
   useEffect(() => {
     void (async () => {
-      try {
-        await fetch("/api/dev/simulate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "reset" })
-        });
-      } catch {
-        // A failed reset shouldn't block the rest of the UI from loading.
+      if (shouldAutoResetDemoOnPageLoad()) {
+        try {
+          await fetch("/api/dev/simulate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "reset" })
+          });
+        } catch {
+          // A failed reset shouldn't block the rest of the UI from loading.
+        }
       }
       await refreshAll();
     })();
@@ -1231,6 +1244,9 @@ export function DispatchWorkstation({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: draft.voiceScript, draftId: draft.id })
       });
+      if (!response.ok) {
+        throw new Error(await readResponseError(response, "Voice playback failed."));
+      }
       const source = response.headers.get("X-Audio-Source") ?? "fallback";
       const blob = await response.blob();
       if (audioRef.current) {
@@ -1254,7 +1270,7 @@ export function DispatchWorkstation({
   async function handleExecuteIntervention(draftId: string) {
     setIsExecuting(true);
     try {
-      await fetch("/api/monitor/interventions/execute", {
+      const response = await fetch("/api/monitor/interventions/execute", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1262,6 +1278,9 @@ export function DispatchWorkstation({
           matchedCommand: "execute"
         })
       });
+      if (!response.ok) {
+        throw new Error(await readResponseError(response, "Execution failed."));
+      }
       await refreshAll(true);
       setAssignmentFeedback("Intervention executed, trip recovered, and decision log updated.");
     } catch (error) {

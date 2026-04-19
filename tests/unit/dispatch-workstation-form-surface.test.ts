@@ -48,6 +48,8 @@ describe.sequential("dispatch workstation form surface", () => {
       configurable: true
     });
 
+    delete process.env.NEXT_PUBLIC_AUTO_RESET_DEMO_ON_PAGE_LOAD;
+
     fetchCalls = [];
 
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
@@ -116,6 +118,8 @@ describe.sequential("dispatch workstation form surface", () => {
   });
 
   it("removes local-only morning triage form controls while keeping db-backed route creation controls", async () => {
+    process.env.NEXT_PUBLIC_AUTO_RESET_DEMO_ON_PAGE_LOAD = "true";
+
     render(createElement(DispatchWorkstation, { initialStage: "morning_triage" }));
 
     await screen.findByText("Operations desk");
@@ -139,6 +143,63 @@ describe.sequential("dispatch workstation form surface", () => {
       expect(screen.getAllByRole("combobox")).toHaveLength(3);
     });
     expect(screen.getByRole("button", { name: "Create trip" })).toBeInTheDocument();
+  });
+
+  it("does not auto-reset the shared demo on non-local hosts", async () => {
+    render(createElement(DispatchWorkstation, { initialStage: "morning_triage" }));
+
+    await screen.findByText("Operations desk");
+    expect(
+      fetchCalls.some(
+        (call) => call.url.endsWith("/api/dev/simulate") && call.method === "POST" && call.body?.includes('"reset"')
+      )
+    ).toBe(false);
+  });
+
+  it("shows the backend message when execute now fails", async () => {
+    await simulateRoute(
+      new Request("http://localhost/api/dev/simulate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tripId: "TRIP-ACT3",
+          scenario: "breakdown"
+        })
+      })
+    );
+    await monitorTickRoute();
+
+    const realFetch = globalThis.fetch;
+
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof Request
+            ? input.url
+            : input.toString();
+      const method =
+        init?.method ??
+        (typeof input === "string"
+          ? "GET"
+          : input instanceof Request
+            ? input.method
+            : "GET") ??
+        "GET";
+
+      if (url.endsWith("/api/monitor/interventions/execute") && method === "POST") {
+        return Response.json({ message: "Intervention draft was reset." }, { status: 404 });
+      }
+
+      return realFetch(input as RequestInfo | URL, init);
+    });
+
+    render(createElement(DispatchWorkstation, { initialStage: "trip_monitoring" }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Execute now" }));
+
+    expect(await screen.findByText(/Intervention draft was reset\./)).toBeInTheDocument();
+    expect(screen.queryByText(/Intervention executed, trip recovered/i)).not.toBeInTheDocument();
   });
 
   it("shows all live monitor alerts, removes say-to-execute copy, and supports minimizing the popup", async () => {
