@@ -50,7 +50,15 @@ export function ActionBar({
           </div>
 
           <p className="text-sm leading-6 text-[color:var(--color-shell-text-muted)]">{description}</p>
-          {feedback ? <div className="pt-1 text-sm font-medium text-[color:var(--color-shell-text)]">{feedback}</div> : null}
+          {feedback ? (
+            <div
+              role="status"
+              aria-live="polite"
+              className="pt-1 text-sm font-medium text-[color:var(--color-shell-text)]"
+            >
+              {feedback}
+            </div>
+          ) : null}
         </div>
 
         <div className="flex flex-wrap items-center gap-3">{secondaryAction}{primaryAction}</div>
