@@ -26,6 +26,7 @@ export type DispatchMapRoute = {
   stroke: string;
   width: number;
   dashed?: boolean;
+  opacity?: number;
 };
 
 export type DispatchMapMarker = {
@@ -33,8 +34,9 @@ export type DispatchMapMarker = {
   lat: number;
   lng: number;
   label: string;
-  kind: "driver" | "trip" | "load" | "relay";
+  kind: "driver" | "trip" | "load" | "relay" | "backhaul";
   emphasized?: boolean;
+  state?: "default" | "alert" | "hovered" | "selected";
 };
 
 export type DispatchMapHandle = {
@@ -60,6 +62,9 @@ function markerColor(kind: DispatchMapMarker["kind"]) {
   if (kind === "trip") {
     return "#214CBA";
   }
+  if (kind === "backhaul") {
+    return "#0E8A5B";
+  }
   if (kind === "load") {
     return "#00598F";
   }
@@ -79,7 +84,9 @@ function createLineFeatureCollection(routes: DispatchMapRoute[]) {
         properties: {
           id: route.id,
           stroke: route.stroke,
-          width: route.width
+          width: route.width,
+          opacity: route.opacity ?? 0.96,
+          casingOpacity: Math.min((route.opacity ?? 0.96) + 0.06, 1)
         },
         geometry: {
           type: "LineString" as const,
@@ -149,7 +156,7 @@ function ensureRouteLayers(map: mapboxgl.Map) {
       paint: {
         "line-color": "rgba(255,255,255,0.88)",
         "line-width": ["+", ["get", "width"], 3],
-        "line-opacity": 0.9
+        "line-opacity": ["coalesce", ["get", "casingOpacity"], 0.9]
       },
       layout: {
         "line-cap": "round",
@@ -166,7 +173,7 @@ function ensureRouteLayers(map: mapboxgl.Map) {
       paint: {
         "line-color": ["get", "stroke"],
         "line-width": ["get", "width"],
-        "line-opacity": 0.98
+        "line-opacity": ["coalesce", ["get", "opacity"], 0.98]
       },
       layout: {
         "line-cap": "round",
@@ -183,7 +190,7 @@ function ensureRouteLayers(map: mapboxgl.Map) {
       paint: {
         "line-color": "rgba(255,255,255,0.82)",
         "line-width": ["+", ["get", "width"], 3],
-        "line-opacity": 0.8
+        "line-opacity": ["coalesce", ["get", "casingOpacity"], 0.8]
       },
       layout: {
         "line-cap": "round",
@@ -200,7 +207,7 @@ function ensureRouteLayers(map: mapboxgl.Map) {
       paint: {
         "line-color": ["get", "stroke"],
         "line-width": ["get", "width"],
-        "line-opacity": 0.95,
+        "line-opacity": ["coalesce", ["get", "opacity"], 0.95],
         "line-dasharray": [2.2, 1.6]
       },
       layout: {
@@ -222,21 +229,51 @@ function updateRouteSources(map: mapboxgl.Map, routes: DispatchMapRoute[]) {
 }
 
 function createMarkerNode(marker: DispatchMapMarker) {
+  const state = marker.state ?? (marker.emphasized ? "selected" : "default");
+  const color = markerColor(marker.kind);
+  const prominent = state === "selected" || state === "hovered" || marker.kind === "load" || marker.kind === "backhaul";
+  const dotSize =
+    state === "hovered" ? 18 : state === "selected" || marker.emphasized ? 16 : state === "alert" ? 14 : 12;
+
   const root = document.createElement("div");
   root.className = "dispatch-map-marker";
+  root.style.zIndex = String(
+    state === "hovered" ? 5 : state === "selected" || marker.kind === "relay" || marker.kind === "backhaul" ? 4 : state === "alert" ? 3 : 1
+  );
 
   const label = document.createElement("div");
   label.className = "dispatch-map-label";
   label.textContent = marker.label;
+  label.style.opacity = prominent ? "1" : "0.86";
+  label.style.transform = prominent ? "translateY(-1px)" : "none";
+  label.style.borderColor = prominent ? "rgba(255,255,255,0.96)" : "rgba(255,255,255,0.72)";
+  label.style.boxShadow =
+    state === "hovered"
+      ? "0 8px 22px rgba(21,27,41,0.22)"
+      : prominent
+        ? "0 6px 18px rgba(21,27,41,0.16)"
+        : "0 4px 12px rgba(21,27,41,0.12)";
 
   const dot = document.createElement("div");
   dot.className = marker.emphasized ? "dispatch-map-dot dispatch-map-dot--large" : "dispatch-map-dot";
-  dot.style.backgroundColor = markerColor(marker.kind);
+  dot.style.backgroundColor = color;
+  dot.style.width = `${dotSize}px`;
+  dot.style.height = `${dotSize}px`;
+  dot.style.border = state === "hovered" ? "2px solid rgba(255,255,255,0.98)" : "2px solid rgba(255,255,255,0.92)";
+  dot.style.boxShadow =
+    state === "hovered"
+      ? `0 0 0 6px ${color}22, 0 10px 20px rgba(21,27,41,0.24)`
+      : state === "selected"
+        ? `0 0 0 4px ${color}20, 0 8px 18px rgba(21,27,41,0.18)`
+        : state === "alert"
+          ? "0 0 0 4px rgba(217,119,6,0.16)"
+          : "0 4px 12px rgba(21,27,41,0.14)";
 
-  if (marker.emphasized) {
+  if (prominent || state === "alert") {
     const ring = document.createElement("div");
     ring.className = "dispatch-map-dot-ring";
-    ring.style.borderColor = markerColor(marker.kind);
+    ring.style.borderColor = state === "alert" ? "#D97706" : color;
+    ring.style.opacity = state === "hovered" ? "1" : "0.82";
     dot.appendChild(ring);
   }
 
@@ -254,7 +291,17 @@ function syncMarkers(
   markerRegistry.forEach((marker) => marker.remove());
   markerRegistry.length = 0;
 
-  markers.forEach((marker) => {
+  markers
+    .slice()
+    .sort((left, right) => {
+      const leftRank =
+        left.state === "hovered" ? 4 : left.state === "selected" || left.kind === "relay" || left.kind === "backhaul" ? 3 : left.state === "alert" ? 2 : 1;
+      const rightRank =
+        right.state === "hovered" ? 4 : right.state === "selected" || right.kind === "relay" || right.kind === "backhaul" ? 3 : right.state === "alert" ? 2 : 1;
+
+      return leftRank - rightRank;
+    })
+    .forEach((marker) => {
     const instance = new mapboxgl.Marker({
       element: createMarkerNode(marker),
       anchor: "bottom"
@@ -263,7 +310,7 @@ function syncMarkers(
       .addTo(map);
 
     markerRegistry.push(instance);
-  });
+    });
 }
 
 function InteractiveDispatchMapInner(

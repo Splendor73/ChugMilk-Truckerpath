@@ -3,6 +3,16 @@
 @tailwind utilities;
 
 :root {
+  --color-shell-bg: #f4f7fb;
+  --color-shell-surface: #ffffff;
+  --color-shell-surface-muted: #eef3f9;
+  --color-shell-border: #d8e1ec;
+  --color-shell-text: #102033;
+  --color-shell-text-muted: #5f6e81;
+  --color-shell-brand: #1e4ed8;
+  --color-shell-brand-soft: #dbe7ff;
+  --color-shell-accent: #0f766e;
+
   --navpro-font-sans: "Open Sans", system-ui, "Helvetica Neue", "Segoe UI", Roboto, Arial, sans-serif;
 
   --navpro-bg-app: #ffffff;
@@ -46,7 +56,10 @@
     min-height: 100%;
     padding: 0;
     font-family: var(--navpro-font-sans);
-    background: var(--navpro-bg-app);
+    background:
+      radial-gradient(circle at top left, rgba(30, 78, 216, 0.09), transparent 32%),
+      radial-gradient(circle at 85% 0%, rgba(15, 118, 110, 0.06), transparent 28%),
+      linear-gradient(180deg, #f7f9fc 0%, #eef3f9 100%);
     color: var(--navpro-text);
   }
 
@@ -64,7 +77,10 @@
 
 @layer utilities {
   .bg-shell {
-    background: var(--navpro-bg-app);
+    background:
+      radial-gradient(circle at top left, rgba(30, 78, 216, 0.08), transparent 35%),
+      radial-gradient(circle at 82% 20%, rgba(15, 118, 110, 0.06), transparent 30%),
+      linear-gradient(180deg, #f7f9fc 0%, #eef3f9 100%);
   }
 
   .glass-panel {

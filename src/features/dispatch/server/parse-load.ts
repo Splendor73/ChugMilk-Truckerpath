@@ -1,3 +1,5 @@
+import { getServerEnv } from "@/config/env.server";
+import { callLLM } from "@/features/copilot/server/call-llm";
 import type { Load } from "@/shared/contracts";
 import { findCityCoordinates } from "@/shared/utils/geo";
 import { findLoadById, listLoads } from "@/server/core/load-board";
@@ -5,6 +7,8 @@ import { findLoadById, listLoads } from "@/server/core/load-board";
 const CITY_ALIASES: Record<string, { city: string; state: string }> = {
   PHX: { city: "Phoenix", state: "AZ" },
   PHOENIX: { city: "Phoenix", state: "AZ" },
+  DEN: { city: "Denver", state: "CO" },
+  DENVER: { city: "Denver", state: "CO" },
   SFO: { city: "San Francisco", state: "CA" },
   "SAN FRANCISCO": { city: "San Francisco", state: "CA" },
   VEGAS: { city: "Las Vegas", state: "NV" },
@@ -42,6 +46,21 @@ type LocationCandidate = {
   state: string;
 };
 
+type LLMExtractedLoad = {
+  originCity: string | null;
+  originState: string | null;
+  destinationCity: string | null;
+  destinationState: string | null;
+  pickupDayOffset: number | null;
+  pickupHour24: number | null;
+  pickupMinute: number | null;
+  pickupWindowHours: number | null;
+  rateUsd: number | null;
+  weightLbs: number | null;
+  commodity: string | null;
+  customer: string | null;
+};
+
 const LOCATION_CANDIDATES: LocationCandidate[] = (() => {
   const unique = new Map<string, LocationCandidate>();
 
@@ -76,6 +95,101 @@ function parseAmount(input: string, regex: RegExp, fallback?: number) {
     return fallback;
   }
   return Number(match[1].replace(/,/g, ""));
+}
+
+function toNullableString(value: unknown) {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function toNullableNumber(value: unknown) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return null;
+  }
+
+  return value;
+}
+
+function extractJsonObject(raw: string) {
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced?.[1]) {
+    return fenced[1].trim();
+  }
+
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+  if (start !== -1 && end !== -1 && end > start) {
+    return raw.slice(start, end + 1);
+  }
+
+  throw new Error("LLM load extraction did not return JSON.");
+}
+
+function parseLLMExtraction(raw: string): LLMExtractedLoad | null {
+  const json = JSON.parse(extractJsonObject(raw)) as Record<string, unknown>;
+
+  return {
+    originCity: toNullableString(json.origin_city),
+    originState: toNullableString(json.origin_state),
+    destinationCity: toNullableString(json.destination_city),
+    destinationState: toNullableString(json.destination_state),
+    pickupDayOffset: toNullableNumber(json.pickup_day_offset),
+    pickupHour24: toNullableNumber(json.pickup_hour_24),
+    pickupMinute: toNullableNumber(json.pickup_minute),
+    pickupWindowHours: toNullableNumber(json.pickup_window_hours),
+    rateUsd: toNullableNumber(json.rate_usd),
+    weightLbs: toNullableNumber(json.weight_lbs),
+    commodity: toNullableString(json.commodity),
+    customer: toNullableString(json.customer)
+  };
+}
+
+function hasConfiguredLoadExtractionModel() {
+  const env = getServerEnv();
+  return Boolean(env.GROQ_API_KEY || env.GEMINI_API_KEY);
+}
+
+async function extractLoadWithLLM(message: string): Promise<LLMExtractedLoad | null> {
+  if (!hasConfiguredLoadExtractionModel()) {
+    return null;
+  }
+
+  const env = getServerEnv();
+  const today = new Date().toISOString().slice(0, 10);
+
+  try {
+    const response = await callLLM(
+      [
+        {
+          role: "system",
+          content:
+            "Extract structured trucking load fields from broker text. Respond with JSON only. " +
+            "Use null for missing fields. Keep city names normalized and states as 2-letter abbreviations when known. " +
+            "pickup_day_offset is 0 for today, 1 for tomorrow, 2 for day after tomorrow. " +
+            "pickup_hour_24 uses 24-hour time and pickup_window_hours is the window length."
+        },
+        {
+          role: "user",
+          content:
+            `Today is ${today}. Extract this load into JSON with keys ` +
+            "{origin_city, origin_state, destination_city, destination_state, pickup_day_offset, pickup_hour_24, pickup_minute, pickup_window_hours, rate_usd, weight_lbs, commodity, customer}. " +
+            `Text: ${message}`
+        }
+      ],
+      undefined,
+      {
+        model: env.GROQ_API_KEY ? "groq" : "gemini"
+      }
+    );
+
+    return parseLLMExtraction(response.content);
+  } catch {
+    return null;
+  }
 }
 
 function parseLocation(token: string) {
@@ -136,6 +250,19 @@ function resolveLocationToken(token: string) {
   return null;
 }
 
+function resolveExtractedLocation(city: string | null, state: string | null) {
+  if (!city) {
+    return null;
+  }
+
+  const direct = state ? findCityCoordinates(city, state) : findCityCoordinates(city);
+  if (direct) {
+    return direct;
+  }
+
+  return parseLocation(state ? `${city} ${state}` : city);
+}
+
 function extractRouteLocations(message: string) {
   const compact = message.replace(/\s+/g, " ").trim();
   const patterns = [
@@ -149,11 +276,13 @@ function extractRouteLocations(message: string) {
       continue;
     }
 
-    const origin = resolveLocationToken(match[1]);
-    const destination = resolveLocationToken(match[2]);
-    if (origin && destination) {
-      return { origin, destination };
-    }
+    return {
+      originToken: cleanLocationToken(match[1]),
+      destinationToken: cleanLocationToken(match[2]),
+      origin: resolveLocationToken(match[1]),
+      destination: resolveLocationToken(match[2]),
+      explicitRoute: true as const
+    };
   }
 
   const mentions = LOCATION_CANDIDATES.flatMap((candidate) => {
@@ -185,38 +314,47 @@ function extractRouteLocations(message: string) {
 
   if (distinct.length >= 2) {
     return {
+      originToken: distinct[0].coords.city,
+      destinationToken: distinct[1].coords.city,
       origin: distinct[0].coords,
-      destination: distinct[1].coords
+      destination: distinct[1].coords,
+      explicitRoute: false as const
     };
   }
 
   return null;
 }
 
-function parsePickupWindow(message: string) {
+function parsePickupWindow(message: string, extracted?: LLMExtractedLoad | null) {
   const lower = message.toLowerCase();
   const now = new Date();
   const pickup = new Date(now);
-  if (lower.includes("tomorrow")) {
-    pickup.setDate(pickup.getDate() + 1);
-  }
-  const hourMatch = lower.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)/);
-  if (hourMatch) {
-    let hours = Number(hourMatch[1]);
-    const minutes = Number(hourMatch[2] ?? 0);
-    const meridiem = hourMatch[3];
-    if (meridiem === "pm" && hours !== 12) {
-      hours += 12;
-    }
-    if (meridiem === "am" && hours === 12) {
-      hours = 0;
-    }
-    pickup.setHours(hours, minutes, 0, 0);
+  pickup.setDate(
+    pickup.getDate() + (typeof extracted?.pickupDayOffset === "number" ? extracted.pickupDayOffset : lower.includes("tomorrow") ? 1 : 0)
+  );
+
+  if (typeof extracted?.pickupHour24 === "number") {
+    pickup.setHours(extracted.pickupHour24, extracted.pickupMinute ?? 0, 0, 0);
   } else {
-    pickup.setHours(9, 0, 0, 0);
+    const hourMatch = lower.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)/);
+    if (hourMatch) {
+      let hours = Number(hourMatch[1]);
+      const minutes = Number(hourMatch[2] ?? 0);
+      const meridiem = hourMatch[3];
+      if (meridiem === "pm" && hours !== 12) {
+        hours += 12;
+      }
+      if (meridiem === "am" && hours === 12) {
+        hours = 0;
+      }
+      pickup.setHours(hours, minutes, 0, 0);
+    } else {
+      pickup.setHours(9, 0, 0, 0);
+    }
   }
+
   const pickupEnd = new Date(pickup);
-  pickupEnd.setHours(pickupEnd.getHours() + 4);
+  pickupEnd.setHours(pickupEnd.getHours() + (extracted?.pickupWindowHours && extracted.pickupWindowHours > 0 ? extracted.pickupWindowHours : 4));
   return { pickupStartMs: pickup.getTime(), pickupEndMs: pickupEnd.getTime() };
 }
 
@@ -233,17 +371,39 @@ export async function parseLoadInput(input: { userMessage: string }): Promise<Lo
     }
   }
 
+  const llmExtraction = await extractLoadWithLLM(message);
   const route = extractRouteLocations(message);
-  const originCoords = route?.origin ?? parseLocation("Phoenix");
-  const destinationCoords = route?.destination ?? parseLocation("San Francisco");
+  const llmOrigin = resolveExtractedLocation(llmExtraction?.originCity ?? null, llmExtraction?.originState ?? null);
+  const llmDestination = resolveExtractedLocation(llmExtraction?.destinationCity ?? null, llmExtraction?.destinationState ?? null);
+
+  const unresolvedLLMLocations = [
+    llmExtraction?.originCity && !llmOrigin ? llmExtraction.originCity : null,
+    llmExtraction?.destinationCity && !llmDestination ? llmExtraction.destinationCity : null
+  ].filter((token): token is string => Boolean(token));
+
+  if (unresolvedLLMLocations.length > 0) {
+    throw new Error(`Could not resolve ${unresolvedLLMLocations.join(" and ")} from pasted load.`);
+  }
+
+  if (route?.explicitRoute && (!route.origin || !route.destination)) {
+    const unresolved = [
+      !route.origin ? route.originToken : null,
+      !route.destination ? route.destinationToken : null
+    ].filter((token): token is string => Boolean(token));
+
+    throw new Error(`Could not resolve ${unresolved.join(" and ")} from pasted load.`);
+  }
+
+  const originCoords = llmOrigin ?? route?.origin ?? parseLocation("Phoenix");
+  const destinationCoords = llmDestination ?? route?.destination ?? parseLocation("San Francisco");
 
   if (!originCoords || !destinationCoords) {
     throw new Error("Could not resolve origin/destination from pasted load.");
   }
 
-  const rateUsd = parseAmount(message, /\$([\d,]+)/, 2000) ?? 2000;
-  const weightLbs = parseAmount(message, /([\d,]+)\s*(?:lbs|lb)/i, undefined);
-  const { pickupStartMs, pickupEndMs } = parsePickupWindow(message);
+  const rateUsd = llmExtraction?.rateUsd ?? parseAmount(message, /\$([\d,]+)/, 2000) ?? 2000;
+  const weightLbs = llmExtraction?.weightLbs ?? parseAmount(message, /([\d,]+)\s*(?:lbs|lb)/i, undefined);
+  const { pickupStartMs, pickupEndMs } = parsePickupWindow(message, llmExtraction);
 
   const matchedSeed = listLoads().find(
     (load) =>
@@ -275,7 +435,7 @@ export async function parseLoadInput(input: { userMessage: string }): Promise<Lo
     pickupEndMs,
     rateUsd,
     weightLbs,
-    commodity: lower.includes("dry van") ? "General Freight" : undefined,
-    customer: "Broker Load"
+    commodity: llmExtraction?.commodity ?? (lower.includes("dry van") ? "General Freight" : undefined),
+    customer: llmExtraction?.customer ?? "Broker Load"
   };
 }

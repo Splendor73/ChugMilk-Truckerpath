@@ -39,8 +39,8 @@ export async function findBackhauls(input: {
     .slice(0, 3);
 }
 
-export async function getBackhaulOptions(input: { outboundLoadId: string; driverId: number }) {
-  const outbound = findLoadById(input.outboundLoadId);
+export async function getBackhaulOptions(input: { outboundLoadId: string; outboundLoad?: Load; driverId: number }) {
+  const outbound = input.outboundLoad ?? findLoadById(input.outboundLoadId);
   if (!outbound) {
     throw new Error(`Unknown outbound load: ${input.outboundLoadId}`);
   }

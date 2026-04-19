@@ -1,5 +1,6 @@
 import { agentRequestSchema } from "@/shared/schemas/contracts";
 import { fail, readJson } from "@/server/core/http";
+import { ensureDemoRuntimeReady } from "@/server/runtime/demo-runtime";
 import { runCopilot } from "@/features/copilot/server/run-copilot";
 
 export const runtime = "nodejs";
@@ -10,6 +11,7 @@ function encodeEvent(data: unknown) {
 
 export async function POST(request: Request) {
   try {
+    await ensureDemoRuntimeReady();
     const input = await readJson(request, agentRequestSchema);
     const encoder = new TextEncoder();
     const iterator = runCopilot(input);

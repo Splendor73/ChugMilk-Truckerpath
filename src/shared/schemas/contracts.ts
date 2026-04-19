@@ -19,22 +19,46 @@ export const driverPerformanceSummarySchema = z.object({
   scheduleTimeMin: z.number()
 });
 
-export const driverSchema = z.object({
-  driverId: z.number(),
-  name: z.string(),
-  phone: z.string(),
-  homeBase: coordinatesSchema.extend({ city: z.string() }),
-  currentLocation: coordinatesSchema.extend({ updatedAtMs: z.number() }),
-  hosRemainingMin: z.number(),
-  hosStatus: z.enum(["fresh", "low", "must_rest"]),
-  complianceFlags: z.array(complianceFlagSchema),
-  performance: driverPerformanceSummarySchema.optional(),
-  activeTripId: z.string().nullable()
+const tripStatusSchema = z.enum(["on_track", "route_deviation", "long_idle", "hos_risk", "eta_slip"]);
+
+export const driverMarketSchema = coordinatesSchema.extend({
+  city: z.string(),
+  state: z.string(),
+  label: z.string().optional()
 });
 
 export const loadStopSchema = coordinatesSchema.extend({
   city: z.string(),
   state: z.string()
+});
+
+export const driverTripSummarySchema = z.object({
+  tripId: z.string(),
+  loadId: z.string(),
+  status: tripStatusSchema,
+  origin: loadStopSchema.nullable(),
+  destination: loadStopSchema.nullable(),
+  etaMs: z.number().nullable(),
+  routeContext: z.string(),
+  remainingMiles: z.number().nullable()
+});
+
+export const driverSchema = z.object({
+  driverId: z.number(),
+  name: z.string(),
+  phone: z.string(),
+  homeBase: coordinatesSchema.extend({ city: z.string(), state: z.string().optional() }),
+  currentLocation: coordinatesSchema.extend({ updatedAtMs: z.number() }),
+  currentMarket: driverMarketSchema.optional(),
+  hosRemainingMin: z.number(),
+  hosStatus: z.enum(["fresh", "low", "must_rest"]),
+  operationalStatus: z.enum(["available", "driving", "resting", "maintenance", "unknown"]).optional(),
+  complianceFlags: z.array(complianceFlagSchema),
+  performance: driverPerformanceSummarySchema.optional(),
+  performanceScore: z.number().optional(),
+  activeTripId: z.string().nullable(),
+  activeTrip: driverTripSummarySchema.nullable().optional(),
+  recentTrips: z.array(driverTripSummarySchema).optional()
 });
 
 export const loadSchema = z.object({
@@ -56,12 +80,51 @@ export const activeTripSchema = z.object({
   loadId: z.string(),
   currentLoc: coordinatesSchema,
   etaMs: z.number(),
-  status: z.enum(["on_track", "route_deviation", "long_idle", "hos_risk", "eta_slip"]),
-  plannedRoute: z.array(coordinatesSchema)
+  status: tripStatusSchema,
+  plannedRoute: z.array(coordinatesSchema),
+  origin: loadStopSchema.nullable().optional(),
+  destination: loadStopSchema.nullable().optional(),
+  routeContext: z.string().optional(),
+  remainingMiles: z.number().nullable().optional()
+});
+
+export const routeDeskItemSchema = z.object({
+  tripId: z.string(),
+  driverId: z.number(),
+  loadId: z.string(),
+  status: tripStatusSchema,
+  etaMs: z.number(),
+  currentLoc: coordinatesSchema,
+  plannedRoute: z.array(coordinatesSchema),
+  routePointCount: z.number(),
+  lastSeenAtMs: z.number(),
+  sourceUpdatedAtMs: z.number().nullable(),
+  scenarioOverride: z.string().nullable().optional(),
+  overrideReason: z.string().nullable().optional(),
+  origin: loadStopSchema.nullable().optional(),
+  destination: loadStopSchema.nullable().optional(),
+  routeContext: z.string(),
+  remainingMiles: z.number().nullable().optional(),
+  customer: z.string().nullable().optional(),
+  commodity: z.string().nullable().optional(),
+  rateUsd: z.number().nullable().optional(),
+  pickupStartMs: z.number().nullable().optional(),
+  pickupEndMs: z.number().nullable().optional()
+});
+
+export const routeDeskResponseSchema = z.object({
+  routes: z.array(routeDeskItemSchema)
+});
+
+export const routeDeskCreateRequestSchema = z.object({
+  driverId: z.number().int().positive(),
+  loadId: z.string().min(1),
+  status: tripStatusSchema.optional()
 });
 
 export const fleetSnapshotSchema = z.object({
   fetchedAtMs: z.number(),
+  sourceMode: z.enum(["live", "synthetic"]),
   drivers: z.array(driverSchema),
   activeTrips: z.array(activeTripSchema),
   pendingLoads: z.array(loadSchema),
@@ -169,6 +232,7 @@ export const agentRequestSchema = z.object({
 export const assignmentRequestSchema = z.object({
   driverId: z.number(),
   loadId: z.string(),
+  load: loadSchema.optional(),
   returnLoadId: z.string().optional()
 });
 
@@ -185,6 +249,7 @@ export const agentScoreRequestSchema = z.object({
 
 export const agentBackhaulRequestSchema = z.object({
   outboundLoadId: z.string(),
+  outboundLoad: loadSchema.optional(),
   driverId: z.number()
 });
 

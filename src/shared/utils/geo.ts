@@ -1,6 +1,14 @@
 import loads from "../../../data/loads/seed.json";
 
 const EARTH_RADIUS_MILES = 3958.8;
+const MANUAL_CITY_COORDINATES = [
+  {
+    city: "Denver",
+    state: "CO",
+    lat: 39.7392,
+    lng: -104.9903
+  }
+] as const;
 
 export function haversineMiles(lat1: number, lng1: number, lat2: number, lng2: number) {
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
@@ -55,6 +63,15 @@ for (const item of loads) {
     lng: item.destination.lng,
     city: item.destination.city,
     state: item.destination.state
+  });
+}
+
+for (const city of MANUAL_CITY_COORDINATES) {
+  cityMap.set(`${city.city.toLowerCase()}-${city.state.toLowerCase()}`, {
+    lat: city.lat,
+    lng: city.lng,
+    city: city.city,
+    state: city.state
   });
 }
 

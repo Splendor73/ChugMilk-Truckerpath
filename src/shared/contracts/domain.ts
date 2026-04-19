@@ -1,4 +1,13 @@
 export type HOSStatus = "fresh" | "low" | "must_rest";
+export type TripStatus = "on_track" | "route_deviation" | "long_idle" | "hos_risk" | "eta_slip";
+
+export const routeDeskStatusOptions: ReadonlyArray<{ value: TripStatus; label: string }> = [
+  { value: "on_track", label: "On track" },
+  { value: "eta_slip", label: "ETA slip" },
+  { value: "route_deviation", label: "Route deviation" },
+  { value: "long_idle", label: "Long idle" },
+  { value: "hos_risk", label: "HOS risk" }
+] as const;
 
 export interface Coordinates {
   lat: number;
@@ -23,17 +32,46 @@ export interface DriverPerformanceSummary {
   scheduleTimeMin: number;
 }
 
+export type DriverOperationalStatus =
+  | "available"
+  | "driving"
+  | "resting"
+  | "maintenance"
+  | "unknown";
+
+export interface DriverMarket extends Coordinates {
+  city: string;
+  state: string;
+  label?: string;
+}
+
+export interface DriverTripSummary {
+  tripId: string;
+  loadId: string;
+  status: TripStatus;
+  origin: LoadStop | null;
+  destination: LoadStop | null;
+  etaMs: number | null;
+  routeContext: string;
+  remainingMiles: number | null;
+}
+
 export interface Driver {
   driverId: number;
   name: string;
   phone: string;
-  homeBase: Coordinates & { city: string };
+  homeBase: Coordinates & { city: string; state?: string };
   currentLocation: DriverLocation;
+  currentMarket?: DriverMarket;
   hosRemainingMin: number;
   hosStatus: HOSStatus;
+  operationalStatus?: DriverOperationalStatus;
   complianceFlags: ComplianceFlag[];
   performance?: DriverPerformanceSummary;
+  performanceScore?: number;
   activeTripId: string | null;
+  activeTrip?: DriverTripSummary | null;
+  recentTrips?: DriverTripSummary[];
 }
 
 export interface LoadStop extends Coordinates {
@@ -60,12 +98,51 @@ export interface ActiveTrip {
   loadId: string;
   currentLoc: Coordinates;
   etaMs: number;
-  status: "on_track" | "route_deviation" | "long_idle" | "hos_risk" | "eta_slip";
+  status: TripStatus;
   plannedRoute: Coordinates[];
+  origin?: LoadStop | null;
+  destination?: LoadStop | null;
+  routeContext?: string;
+  remainingMiles?: number | null;
+}
+
+export interface RouteDeskItem {
+  tripId: string;
+  driverId: number;
+  loadId: string;
+  status: ActiveTrip["status"];
+  etaMs: number;
+  currentLoc: Coordinates;
+  plannedRoute: Coordinates[];
+  routePointCount: number;
+  lastSeenAtMs: number;
+  sourceUpdatedAtMs: number | null;
+  scenarioOverride?: string | null;
+  overrideReason?: string | null;
+  origin?: LoadStop | null;
+  destination?: LoadStop | null;
+  routeContext: string;
+  remainingMiles?: number | null;
+  customer?: string | null;
+  commodity?: string | null;
+  rateUsd?: number | null;
+  pickupStartMs?: number | null;
+  pickupEndMs?: number | null;
+}
+
+export interface RouteDeskResponse {
+  routes: RouteDeskItem[];
+}
+
+export interface RouteDeskCreateRequest {
+  driverId: number;
+  loadId: string;
+  status?: ActiveTrip["status"];
 }
 
 export interface FleetSnapshot {
   fetchedAtMs: number;
+  sourceMode: "live" | "synthetic";
   drivers: Driver[];
   activeTrips: ActiveTrip[];
   pendingLoads: Load[];
