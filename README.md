@@ -1,12 +1,15 @@
 # Co-Dispach
 
-I built Co-Dispach as a dispatcher workstation demo for the Trucker Path + ElevenLabs hackathon, and the main idea was to keep it focused on the four moments that actually look good in a live demo rather than turning it into a giant general-purpose TMS. The app runs on Next.js 14 with Prisma, Mapbox, and a synthetic NavPro mode by default, so it will still work even before live carrier credentials are ready.
+I built Co-Dispach as a dispatcher workstation demo for the Trucker Path + ElevenLabs hackathon, and I kept the scope pretty tight so the app would feel real in a live demo without turning into a giant half-finished TMS. The whole project is centered around four flows that dispatchers actually care about, which are morning triage, explainable load assignment, backhaul pairing, and proactive monitoring with a voice escalation path.
 
-The product flow is pretty simple once it is running. Morning triage will show who is ready to drive, load assignment will rank drivers and explain the choice, backhaul pairing will show the round-trip margin story, and proactive monitoring will draft interventions plus the voice escalation path. That kept the demo small enough to finish while still looking like a real dispatch tool.
+The repo is a single Next.js 14 app with both the UI and the API routes inside it. Prisma is the database layer, Supabase is the production Postgres target, Mapbox handles the map, and the carrier side runs in synthetic NavPro mode by default so the demo still works even before live credentials are ready.
 
-## Stack
+## What it does
 
-I kept the stack narrow on purpose, so there would be less setup noise and fewer moving parts during deployment. The frontend and API both live in the same Next.js app, Prisma handles the database layer, Supabase is the production Postgres target, Mapbox renders the live map, and the AI and voice integrations stay optional behind environment variables.
+1. Morning triage will show who is ready to run, who is low on hours, and which drivers already have an issue that dispatch should notice first.
+2. Load assignment will score the candidate drivers and explain why the top driver won instead of just dumping a ranking with no reasoning.
+3. Backhaul pairing will take the outbound choice and look for a return load so the round-trip margin story is obvious in the UI.
+4. Proactive monitoring will watch active trips, draft interventions, and support the ElevenLabs voice approval loop when I want the emotional demo moment.
 
 ## Local setup
 
@@ -17,9 +20,9 @@ npm install
 cp .env.example .env.local
 ```
 
-2. Create a Supabase project for development, then put real values into `DATABASE_URL`, `DIRECT_URL`, and `TEST_DATABASE_URL` in `.env.local`.
+2. Create a Supabase project for development, then replace the placeholder values in `.env.local` with real database URLs plus the map token you want to use.
 
-3. Apply the checked-in Prisma migration, generate the client, and clear any old seeded rows.
+3. Apply the checked-in Prisma migration, generate the client, and clear old seed rows.
 
 ```bash
 npm run prisma:generate
@@ -33,7 +36,7 @@ npm run prisma:seed
 npm run dev
 ```
 
-5. Open the main workstation and the demo routes.
+5. Open the workstation and the demo routes.
 
 ```text
 /
@@ -45,13 +48,13 @@ npm run dev
 
 ## Env
 
-There are three database variables now, and I split them on purpose so deployment is safer. `DATABASE_URL` is the runtime connection the app will use in Next.js, `DIRECT_URL` is the direct Postgres connection Prisma will use for migrations, and `TEST_DATABASE_URL` is only for the database-backed test suite. That test database should not point at the same database as runtime, otherwise the test helper will stop immediately.
+I split the database contract into three variables because it is safer once the app is hosted. `DATABASE_URL` is the runtime connection that Next.js will use, `DIRECT_URL` is the direct Postgres connection Prisma will use for migrations, and `TEST_DATABASE_URL` is only for the database-backed test suite. That last one must not point at the same database as runtime, because the test helper will stop immediately if it does.
 
-The first production deploy should keep `USE_SYNTHETIC_NAVPRO=true`, because that gives a stable demo even if live NavPro credentials are still incomplete. `NEXT_PUBLIC_MAPBOX_TOKEN` is required for the map to render correctly, while `GROQ_API_KEY`, `GEMINI_API_KEY`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`, `ELEVENLABS_AGENT_ID`, `NAVPRO_CLIENT_ID`, and `NAVPRO_JWT` are optional until I want to switch specific flows from fallback mode to live services.
+`USE_SYNTHETIC_NAVPRO=true` is the right default for the first production deploy, since it keeps the demo stable while the live integration is still optional. `NEXT_PUBLIC_MAPBOX_TOKEN` is required for the map, while `GROQ_API_KEY`, `GEMINI_API_KEY`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`, `ELEVENLABS_AGENT_ID`, `NAVPRO_CLIENT_ID`, and `NAVPRO_JWT` can stay empty until I actually want those paths to go live.
 
 ## Tests
 
-I changed the repo so tests no longer rebuild a local SQLite file. Database-backed tests will now use `TEST_DATABASE_URL`, and they will refuse to run if that URL is missing or if it matches `DATABASE_URL`. That makes the failure mode more annoying at first, but it is a lot safer once the app is pointed at a real hosted database.
+I removed the old SQLite bootstrap flow, so the database-backed tests now expect a migrated Postgres test database instead of rebuilding `prisma/dev.db`. That makes the setup a bit stricter, but it also means the test suite will stop doing dangerous things once the app has a real hosted database behind it.
 
 Run the checks with:
 
@@ -60,28 +63,26 @@ npm test
 npm run build
 ```
 
-If the database-backed tests fail right away, the first thing I would check is whether `TEST_DATABASE_URL` points at a migrated non-production Postgres database.
+If the database-backed tests fail right away, the first thing I would check is `TEST_DATABASE_URL`, then I would make sure the Prisma migration has already been applied to that non-production database.
 
 ## Deploy
 
-The intended production branch is `main`, and the intended Vercel slug is `co-dispach`. I named the Supabase project `chugmilk`, which keeps the infra label short while the public app can still use the product-facing name.
+The intended production branch is `main`, the Vercel project slug is `co-dispach`, and the Supabase project name is `chugmilk`. I kept the infra names short, while the UI can still use the product-facing label.
 
 1. Push the cleaned branch state to `main`.
-
-2. Create the Supabase project and capture the direct Postgres connection string plus the runtime connection string.
-
-3. Create or link the Vercel project as `co-dispach`, then add the required env vars in Vercel.
-
-4. Run the Prisma migration against Supabase before the first production rollout.
+2. Create the Supabase project and copy the runtime plus direct Postgres URLs.
+3. Create or link the Vercel project as `co-dispach`.
+4. Add the required environment variables in Vercel.
+5. Run the Prisma migration against Supabase before the first production rollout.
 
 ```bash
 npm run prisma:deploy
 ```
 
-5. Deploy a preview first, verify the workstation pages plus the API routes, and only then promote production from `main`.
+6. Deploy a preview first, check the app shell and API routes, then promote production from `main`.
 
-The main pages I check after deployment are `/`, `/morning-triage`, `/load-assignment`, `/backhaul-pairing`, and `/proactive-monitoring`. The API endpoints I check first are `/api/fleet/snapshot`, `/api/routes`, `/api/monitor/feed`, and `/api/voice/speak`, because if those are healthy the rest of the demo is usually in decent shape too.
+The first pages I check after deploy are `/`, `/morning-triage`, `/load-assignment`, `/backhaul-pairing`, and `/proactive-monitoring`. The first API routes I check are `/api/fleet/snapshot`, `/api/routes`, `/api/monitor/feed`, and `/api/voice/speak`, because if those are healthy the rest of the demo is usually in decent shape too.
 
 ## Notes
 
-I removed the old planning docs from the repo on purpose, because they were useful while I was building the prototype but they were starting to get in the way once the codebase became the source of truth. `AGENTS.md` is still here because it carries repo instructions, while this README is now the single handoff doc for setup and deployment.
+I removed the old planning docs on purpose because they were useful while I was building the prototype, but after the app became real code they were mostly just stale context. `AGENTS.md` stays in the repo because it is instruction metadata, while this README is now the single handoff doc for setup and deployment.

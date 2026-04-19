@@ -20,4 +20,4 @@ prisma/dev.db-journal
 .DS_Store
 AGENTS.md
 .codex/
-docs/api.md
+supabase/.temp/

@@ -4,12 +4,13 @@ import { getDb } from "@/server/db/client";
 export function configureBackendTestEnv() {
   const runtimeDatabaseUrl = process.env.DATABASE_URL;
   const testDatabaseUrl = process.env.TEST_DATABASE_URL;
+  const allowSharedTestDatabase = process.env.ALLOW_SHARED_TEST_DATABASE === "true";
 
   if (!testDatabaseUrl) {
     throw new Error("TEST_DATABASE_URL is required for database-backed tests.");
   }
 
-  if (runtimeDatabaseUrl && runtimeDatabaseUrl === testDatabaseUrl) {
+  if (!allowSharedTestDatabase && runtimeDatabaseUrl && runtimeDatabaseUrl === testDatabaseUrl) {
     throw new Error("TEST_DATABASE_URL must not match DATABASE_URL.");
   }
 

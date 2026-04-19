@@ -37,4 +37,13 @@ describe("backend test env", () => {
 
     expect(() => configureBackendTestEnv()).toThrow(/TEST_DATABASE_URL/i);
   });
+
+  it("allows a shared test database only when explicitly opted in", () => {
+    process.env.DATABASE_URL = "postgresql://shared-user:pw@db.example.com:5432/shared";
+    process.env.TEST_DATABASE_URL = process.env.DATABASE_URL;
+    process.env.ALLOW_SHARED_TEST_DATABASE = "true";
+
+    expect(() => configureBackendTestEnv()).not.toThrow();
+    expect(process.env.DATABASE_URL).toBe(process.env.TEST_DATABASE_URL);
+  });
 });
