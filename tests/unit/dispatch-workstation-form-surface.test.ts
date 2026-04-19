@@ -13,6 +13,7 @@ import { POST as monitorTickRoute } from "@/app/api/monitor/tick/route";
 import { GET as getRoutesRoute } from "@/app/api/routes/route";
 import { POST as simulateRoute } from "@/app/api/dev/simulate/route";
 import { getDb } from "@/server/db/client";
+import { resetDemoRuntimeForTests } from "@/server/runtime/demo-runtime";
 
 import { bootstrapBackendTests, closeDatabase } from "../helpers/backend";
 
@@ -29,6 +30,11 @@ describe.sequential("dispatch workstation form surface", () => {
 
   beforeEach(async () => {
     await bootstrapBackendTests();
+    // Clear the cached `ensureDemoRuntimeReady` flag so each test re-runs
+    // the full synthetic seed (all 5 baseline trips). Without this the DB
+    // gets wiped but the synthetic layer thinks it already seeded and
+    // only TRIP-ACT3 gets back-filled via `simulateRoute`'s inner upsert.
+    resetDemoRuntimeForTests();
 
     Object.defineProperty(window, "localStorage", {
       value: {
@@ -95,11 +101,14 @@ describe.sequential("dispatch workstation form surface", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Routes" }));
 
-    await screen.findByText("Create route");
+    const newTripButton = await screen.findByRole("button", { name: "+ New trip" });
+    fireEvent.click(newTripButton);
+
+    await screen.findByRole("dialog", { name: "Create new trip" });
     await waitFor(() => {
       expect(screen.getAllByRole("combobox")).toHaveLength(3);
     });
-    expect(screen.getByRole("button", { name: "Create route in DB" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create trip" })).toBeInTheDocument();
   });
 
   it("shows all live monitor alerts, removes say-to-execute copy, and supports minimizing the popup", async () => {
@@ -114,24 +123,31 @@ describe.sequential("dispatch workstation form surface", () => {
       })
     );
     await monitorTickRoute();
-    await getDb().interventionDraft.create({
-      data: {
-        tripId: "TRIP-SECOND",
-        trigger: "eta_slip",
-        customerSms: "Second alert message for a delayed trip.",
-        relayDriverId: 103,
-        relayDriverName: "Kevin Walsh",
-        relayDistanceMi: 18,
-        rerouteNeeded: true,
-        voiceScript: "Second voice alert for the delayed trip.",
-        status: "drafted"
-      }
-    });
+    // Baseline demo seed ships two non-on_track trips (TRIP-ACT3
+    // long_idle + TRIP-ACT5 eta_slip), so the monitor tick above already
+    // produced two drafts with distinct copy styles. We used to inject a
+    // second draft here by hand; the baseline dataset makes that
+    // unnecessary and lets this test exercise the real `draftIntervention`
+    // templates.
+    const drafts = await getDb().interventionDraft.findMany();
+    expect(drafts.some((draft) => draft.tripId === "TRIP-ACT5")).toBe(true);
 
     render(createElement(DispatchWorkstation, { initialStage: "trip_monitoring" }));
 
-    expect(await screen.findByText("Second alert message for a delayed trip.")).toBeInTheDocument();
-    expect(screen.getByText("Truck 14 has been delayed near Barstow. Revised ETA is approximately 3 hours later than planned. We are dispatching a relay and will keep you updated.")).toBeInTheDocument();
+    // Style A — ops / factual voice (breakdown).
+    expect(
+      await screen.findByText(
+        "Truck 14 has been delayed near Barstow. Revised ETA is approximately 3 hours later than planned. We are dispatching a relay and will keep you updated."
+      )
+    ).toBeInTheDocument();
+    // Style B — customer-care / conversational voice (ETA slip). Assert
+    // on a stable substring so the test doesn't depend on exact delay
+    // minutes that drift with `nowMs()`. The monitoring surface renders
+    // the same draft body in more than one place (popup + drawer), so
+    // we use `getAllByText` and just confirm at least one match.
+    expect(
+      screen.getAllByText(/We're watching it closely and will call the moment the ETA firms up\./).length
+    ).toBeGreaterThan(0);
     expect(screen.queryByText(/Say .*execute/i)).not.toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "Execute now" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Edit draft" })).not.toBeInTheDocument();

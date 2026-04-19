@@ -35,7 +35,23 @@ export async function findBackhauls(input: {
         hosRemainingMin: input.driver.hosRemainingMin
       })
     )
-    .sort((left, right) => right.roundTripProfitUsd - left.roundTripProfitUsd)
+    .sort((left, right) => {
+      // HOS feasibility is a hard constraint -- legally drivable options always
+      // outrank infeasible ones, regardless of how profitable the infeasible
+      // round-trip looks on paper.
+      if (left.hosFeasible !== right.hosFeasible) {
+        return left.hosFeasible ? -1 : 1;
+      }
+      const profitDelta = right.roundTripProfitUsd - left.roundTripProfitUsd;
+      // Within the legal bucket, break near-ties on profit (<= $100) by the
+      // larger HOS cushion since a safer cushion is worth more than a few
+      // dollars of margin. For the infeasible bucket we keep profit-only
+      // ordering so the demo "what you could have run" ranking stays stable.
+      if (left.hosFeasible && right.hosFeasible && Math.abs(profitDelta) <= 100) {
+        return right.hosBufferMin - left.hosBufferMin;
+      }
+      return profitDelta;
+    })
     .slice(0, 3);
 }
 

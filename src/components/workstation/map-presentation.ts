@@ -19,6 +19,10 @@ export type MapPresentationInput = {
   selectedBackhaul: BackhaulOption | null;
   backhaulOpen: boolean;
   driverById: Map<number, Driver>;
+  selectedDeskDriverId?: number | null;
+  isDriversView?: boolean;
+  selectedTripId?: string | null;
+  isRoutesView?: boolean;
 };
 
 export type MapPresentationModel = {
@@ -51,17 +55,21 @@ function viewportFromPoints(points: Coordinates[], fallback: DispatchMapViewport
   const range = spread(points);
   const span = Math.max(range.lng, range.lat * 1.45);
 
-  let zoom = 3.3;
-  if (span < 2.5) {
-    zoom = 6.2;
+  let zoom = 3.6;
+  if (span < 0.6) {
+    zoom = 8.4;
+  } else if (span < 1.2) {
+    zoom = 7.6;
+  } else if (span < 2.5) {
+    zoom = 6.9;
   } else if (span < 5) {
-    zoom = 5.4;
+    zoom = 6.0;
   } else if (span < 9) {
-    zoom = 4.8;
+    zoom = 5.3;
   } else if (span < 15) {
-    zoom = 4.2;
+    zoom = 4.7;
   } else if (span < 25) {
-    zoom = 3.7;
+    zoom = 4.1;
   }
 
   return {
@@ -83,12 +91,137 @@ function tripPoints(trip: FleetSnapshotResponse["activeTrips"][number] | null) {
   return [...trip.plannedRoute, trip.currentLoc];
 }
 
+function buildDriversTrackerModel(
+  input: MapPresentationInput,
+  defaultViewport: DispatchMapViewport
+): MapPresentationModel {
+  const selectedDriver =
+    input.selectedDeskDriverId != null ? input.driverById.get(input.selectedDeskDriverId) ?? null : null;
+  const hoveredDriver = input.hoveredDriverId ? input.driverById.get(input.hoveredDriverId) ?? null : null;
+
+  const activeTripByDriverId = new Map<number, FleetSnapshotResponse["activeTrips"][number]>();
+  for (const trip of input.snapshot?.activeTrips ?? []) {
+    activeTripByDriverId.set(trip.driverId, trip);
+  }
+
+  const selectedTrip = selectedDriver ? activeTripByDriverId.get(selectedDriver.driverId) ?? null : null;
+
+  const routes: DispatchMapRoute[] = [];
+  if (selectedTrip && selectedTrip.plannedRoute.length > 1) {
+    routes.push({
+      id: selectedTrip.tripId,
+      points: selectedTrip.plannedRoute,
+      stroke: "#214CBA",
+      width: 3.4,
+      dashed: selectedTrip.status !== "on_track",
+      opacity: 0.98
+    });
+  }
+
+  const markers: DispatchMapMarker[] = (input.snapshot?.drivers ?? []).map((driver) => {
+    const trip = activeTripByDriverId.get(driver.driverId);
+    const position = trip?.currentLoc ?? driver.currentLocation;
+    const isSelected = driver.driverId === selectedDriver?.driverId;
+    const isHovered = driver.driverId === hoveredDriver?.driverId;
+
+    return {
+      id: `driver-${driver.driverId}`,
+      lat: position.lat,
+      lng: position.lng,
+      label: driver.name.split(" ")[0] ?? driver.name,
+      kind: "driver" as const,
+      state: isHovered ? "hovered" : isSelected ? "selected" : "default",
+      emphasized: isHovered || isSelected
+    } satisfies DispatchMapMarker;
+  });
+
+  let viewport = defaultViewport;
+  if (selectedTrip) {
+    viewport = viewportFromPoints(
+      [...selectedTrip.plannedRoute, selectedTrip.currentLoc],
+      { centerLat: selectedTrip.currentLoc.lat, centerLng: selectedTrip.currentLoc.lng, zoom: 6.4 }
+    );
+  } else if (selectedDriver) {
+    viewport = {
+      centerLat: selectedDriver.currentLocation.lat,
+      centerLng: selectedDriver.currentLocation.lng,
+      zoom: 8.2
+    };
+  } else if (input.snapshot && input.snapshot.drivers.length > 0) {
+    viewport = viewportFromPoints(
+      input.snapshot.drivers.map((driver) => activeTripByDriverId.get(driver.driverId)?.currentLoc ?? driver.currentLocation),
+      defaultViewport
+    );
+  }
+
+  return { viewport, routes, markers };
+}
+
+function buildRoutesTrackerModel(
+  input: MapPresentationInput,
+  defaultViewport: DispatchMapViewport
+): MapPresentationModel {
+  const trips = input.snapshot?.activeTrips ?? [];
+  const selectedTrip = input.selectedTripId
+    ? trips.find((trip) => trip.tripId === input.selectedTripId) ?? null
+    : null;
+
+  const routes: DispatchMapRoute[] = trips
+    .filter((trip) => trip.plannedRoute.length > 1)
+    .map((trip) => {
+      const isSelected = trip.tripId === selectedTrip?.tripId;
+      return {
+        id: trip.tripId,
+        points: trip.plannedRoute,
+        stroke: isSelected ? "#214CBA" : "#9EB0D8",
+        width: isSelected ? 3.6 : 1.6,
+        dashed: trip.status !== "on_track",
+        opacity: isSelected ? 0.98 : 0.5
+      } satisfies DispatchMapRoute;
+    });
+
+  const markers: DispatchMapMarker[] = trips.map((trip) => {
+    const isSelected = trip.tripId === selectedTrip?.tripId;
+    return {
+      id: `trip-${trip.tripId}`,
+      lat: trip.currentLoc.lat,
+      lng: trip.currentLoc.lng,
+      label: trip.tripId,
+      kind: "trip" as const,
+      state: isSelected ? "selected" : trip.status !== "on_track" ? "alert" : "default",
+      emphasized: isSelected || trip.status !== "on_track"
+    } satisfies DispatchMapMarker;
+  });
+
+  let viewport = defaultViewport;
+  if (selectedTrip) {
+    viewport = viewportFromPoints(
+      [...selectedTrip.plannedRoute, selectedTrip.currentLoc],
+      { centerLat: selectedTrip.currentLoc.lat, centerLng: selectedTrip.currentLoc.lng, zoom: 6.4 }
+    );
+  } else if (trips.length > 0) {
+    viewport = viewportFromPoints(
+      trips.map((trip) => trip.currentLoc),
+      defaultViewport
+    );
+  }
+
+  return { viewport, routes, markers };
+}
+
 export function buildMapPresentationModel(input: MapPresentationInput): MapPresentationModel {
   const defaultViewport = {
     centerLat: 39.5,
     centerLng: -98.35,
     zoom: 3.2
   };
+
+  if (input.isRoutesView) {
+    return buildRoutesTrackerModel(input, defaultViewport);
+  }
+  if (input.isDriversView) {
+    return buildDriversTrackerModel(input, defaultViewport);
+  }
   const hoveredDriver = input.hoveredDriverId ? input.driverById.get(input.hoveredDriverId) ?? null : null;
   const selectedDriver = input.selectedScore ? input.driverById.get(input.selectedScore.driverId) ?? null : null;
   const previewDriver = hoveredDriver ?? selectedDriver;
@@ -291,11 +424,11 @@ export function buildMapPresentationModel(input: MapPresentationInput): MapPrese
         : []),
       ...(input.activeTrip ? [input.activeTrip.currentLoc] : [])
     ];
-    viewport = viewportFromPoints(points, { centerLat: 35.1, centerLng: -116.5, zoom: 5.1 });
+    viewport = viewportFromPoints(points, { centerLat: 35.1, centerLng: -116.5, zoom: 5.9 });
   } else if (focusPoints.length > 0) {
     viewport = viewportFromPoints(
       focusPoints,
-      showReturnOverlay ? { centerLat: 36.5, centerLng: -118.3, zoom: 4.5 } : { centerLat: 36.2, centerLng: -118.8, zoom: 4.4 }
+      showReturnOverlay ? { centerLat: 36.5, centerLng: -118.3, zoom: 5.2 } : { centerLat: 36.2, centerLng: -118.8, zoom: 5.1 }
     );
   } else if (input.snapshot) {
     viewport = viewportFromPoints(

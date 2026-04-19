@@ -341,7 +341,8 @@ function InteractiveDispatchMapInner(
         mapRef.current?.easeTo({
           center: [viewport.centerLng, viewport.centerLat],
           zoom: viewport.zoom,
-          duration: 700
+          duration: 950,
+          easing: (t) => t * (2 - t)
         });
       }
     }),
@@ -402,7 +403,8 @@ function InteractiveDispatchMapInner(
     map.easeTo({
       center: [viewport.centerLng, viewport.centerLat],
       zoom: viewport.zoom,
-      duration: 700
+      duration: 950,
+      easing: (t) => t * (2 - t)
     });
   }, [viewport.centerLat, viewport.centerLng, viewport.zoom, viewportKey]);
 

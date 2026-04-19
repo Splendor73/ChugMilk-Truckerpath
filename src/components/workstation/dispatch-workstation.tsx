@@ -17,12 +17,15 @@ import {
   type MonitorFeedResponse,
   type RouteDeskCreateRequest,
   type RouteDeskItem,
-  type RouteDeskResponse
+  type RouteDeskResponse,
+  type RouteDeskUpdateRequest,
+  type TripStatus
 } from "@/shared/contracts";
 import {
   buildWorkstationHref,
   normalizeWorkstationStage,
   workstationStageLabels,
+  type WorkstationDeskPanel,
   type WorkstationStage
 } from "@/lib/navigation/workstation";
 import {
@@ -30,10 +33,12 @@ import {
   type DispatchMapHandle
 } from "@/components/workstation/interactive-dispatch-map";
 import { buildMapPresentationModel } from "@/components/workstation/map-presentation";
+import { clamp, haversineMiles } from "@/shared/utils/geo";
 
 type DispatchWorkstationProps = {
   initialStage?: WorkstationStage;
   initialOperatorMode?: boolean;
+  initialDeskPanel?: WorkstationDeskPanel | null;
 };
 
 type AgentFinalPayload = Extract<AgentStreamEvent, { type: "final" }>["payload"];
@@ -68,6 +73,31 @@ function formatHours(minutes: number) {
 
 function formatPercent(value: number) {
   return `${Math.round(value * 100)}%`;
+}
+
+// Translate a backhaul HOS buffer (driver minutes - required minutes) into a
+// chip describing how the round-trip lines up against drive-time rules.
+// Buffer >= 60 min: comfortable cushion, render as a green "fits HOS" chip.
+// 0..60 min:        legal but tight, render amber so dispatch can warn driver.
+// negative:         over the clock, render red with the deficit.
+type HosFitChip = { label: string; tone: string };
+function hosFitChip(option: { hosFeasible: boolean; hosBufferMin: number }): HosFitChip {
+  if (!option.hosFeasible) {
+    return {
+      label: `HOS short ${formatHours(Math.abs(option.hosBufferMin))}`,
+      tone: "bg-[#FCE8E8] text-[#A33939]"
+    };
+  }
+  if (option.hosBufferMin < 60) {
+    return {
+      label: `HOS tight • ${formatHours(option.hosBufferMin)} cushion`,
+      tone: "bg-[#FFF3D7] text-[#996B00]"
+    };
+  }
+  return {
+    label: `HOS fits • ${formatHours(option.hosBufferMin)} cushion`,
+    tone: "bg-[#E6F6EE] text-[#0E8A5B]"
+  };
 }
 
 function formatTime(value: number) {
@@ -126,6 +156,32 @@ function getDriverDeskStatus(driver: Driver) {
   };
 }
 
+function toLocalDateTimeInputValue(ms: number) {
+  if (!Number.isFinite(ms)) {
+    return "";
+  }
+  const date = new Date(ms);
+  const offsetMs = date.getTime() - date.getTimezoneOffset() * 60000;
+  return new Date(offsetMs).toISOString().slice(0, 16);
+}
+
+function parseLocalDateTimeInputValue(value: string) {
+  if (!value) {
+    return null;
+  }
+  const ms = new Date(value).getTime();
+  return Number.isFinite(ms) ? ms : null;
+}
+
+const routeDeskFilterOptions: ReadonlyArray<{ key: "all" | TripStatus; label: string }> = [
+  { key: "all", label: "All" },
+  { key: "on_track", label: "On track" },
+  { key: "route_deviation", label: "Deviation" },
+  { key: "long_idle", label: "Long idle" },
+  { key: "hos_risk", label: "HOS risk" },
+  { key: "eta_slip", label: "ETA slip" }
+];
+
 function getRouteStatusTone(status: RouteDeskItem["status"]) {
   switch (status) {
     case "route_deviation":
@@ -163,6 +219,46 @@ function formatPerformanceDelta(actual: number, scheduled: number) {
   }
 
   return `${delta > 0 ? "+" : ""}${formatNumber(delta)} mi`;
+}
+
+function formatRemainingDuration(etaMs: number, nowMs: number) {
+  const deltaMin = Math.round((etaMs - nowMs) / 60000);
+  if (Number.isNaN(deltaMin)) {
+    return "ETA unavailable";
+  }
+
+  if (deltaMin <= 0) {
+    const overdue = Math.abs(deltaMin);
+    if (overdue < 60) {
+      return `Overdue ${overdue}m`;
+    }
+    const overdueHours = Math.floor(overdue / 60);
+    const overdueMinutes = overdue % 60;
+    return `Overdue ${overdueHours}h ${overdueMinutes}m`;
+  }
+
+  if (deltaMin < 60) {
+    return `${deltaMin}m to arrive`;
+  }
+
+  const hours = Math.floor(deltaMin / 60);
+  const minutes = deltaMin % 60;
+  return `${hours}h ${minutes}m to arrive`;
+}
+
+function getTripStatusBadge(status: TripStatus) {
+  switch (status) {
+    case "route_deviation":
+      return { label: "Route deviation", tone: "bg-[#FFF3D7] text-[#996B00]" };
+    case "long_idle":
+      return { label: "Long idle", tone: "bg-[#FFE4DA] text-[#A9441F]" };
+    case "hos_risk":
+      return { label: "HOS risk", tone: "bg-[#FCE8E8] text-[#A33939]" };
+    case "eta_slip":
+      return { label: "ETA slip", tone: "bg-[#F7E8FF] text-[#7A3DB8]" };
+    default:
+      return { label: "On track", tone: "bg-[#E6F6EE] text-[#0E8A5B]" };
+  }
 }
 
 function formatCountLabel(count: number, singular: string, plural = `${singular}s`) {
@@ -420,9 +516,12 @@ type CandidateMetricKey = "deadhead" | "hos" | "fuel" | "eta" | "ripple";
 
 export function DispatchWorkstation({
   initialStage = "morning_triage",
-  initialOperatorMode = false
+  initialOperatorMode = false,
+  initialDeskPanel = null
 }: DispatchWorkstationProps) {
-  const [activeStage, setActiveStage] = useState<WorkstationStage>(normalizeWorkstationStage(initialStage));
+  const [activeStage, setActiveStage] = useState<WorkstationStage>(
+    initialDeskPanel ? "morning_triage" : normalizeWorkstationStage(initialStage)
+  );
   const [operatorMode] = useState(initialOperatorMode);
   const [panelWidth, setPanelWidth] = useState(DEFAULT_PANEL_WIDTH);
   const [viewportWidth, setViewportWidth] = useState(1600);
@@ -451,13 +550,24 @@ export function DispatchWorkstation({
   const [isOperatorRunning, setIsOperatorRunning] = useState(false);
   const [selectedMetricKey, setSelectedMetricKey] = useState<CandidateMetricKey>("deadhead");
   const [driverDeskFilter, setDriverDeskFilter] = useState<DriverDeskFilter>("all");
-  const [deskPanelView, setDeskPanelView] = useState<DeskPanelView>("drivers");
-  const [activeTopBarNav, setActiveTopBarNav] = useState<TopBarNavItem>(normalizeWorkstationStage(initialStage));
+  const [deskPanelView, setDeskPanelView] = useState<DeskPanelView>(initialDeskPanel ?? "drivers");
+  const [activeTopBarNav, setActiveTopBarNav] = useState<TopBarNavItem>(
+    initialDeskPanel ?? normalizeWorkstationStage(initialStage)
+  );
   const [routeDesk, setRouteDesk] = useState<RouteDeskResponse | null>(null);
   const [routeDeskError, setRouteDeskError] = useState<string | null>(null);
   const [routeDeskMessage, setRouteDeskMessage] = useState<string | null>(null);
   const [isSavingRoute, setIsSavingRoute] = useState(false);
   const [deletingRouteTripId, setDeletingRouteTripId] = useState<string | null>(null);
+  const [updatingTripField, setUpdatingTripField] = useState<"status" | "eta" | "currentLoc" | "driver" | null>(null);
+  const [selectedRouteTripId, setSelectedRouteTripId] = useState<string | null>(null);
+  const [routeDeskFilter, setRouteDeskFilter] = useState<"all" | TripStatus>("all");
+  const [routeDeskSearch, setRouteDeskSearch] = useState("");
+  const [isCreateRouteModalOpen, setIsCreateRouteModalOpen] = useState(false);
+  const [routeEtaDraft, setRouteEtaDraft] = useState("");
+  const [routeLatDraft, setRouteLatDraft] = useState("");
+  const [routeLngDraft, setRouteLngDraft] = useState("");
+  const [routeDriverDraft, setRouteDriverDraft] = useState("");
   const [routeCreateForm, setRouteCreateForm] = useState<{
     driverId: string;
     loadId: string;
@@ -473,28 +583,56 @@ export function DispatchWorkstation({
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const mapRef = useRef<DispatchMapHandle | null>(null);
   const panelResizeStartRef = useRef<{ x: number; width: number } | null>(null);
+  const leftPanelRef = useRef<HTMLElement | null>(null);
+
+  // When the dispatcher taps a collapsed row (driver or route) the newly
+  // selected detail card swaps in at the top of the left panel. Without this
+  // scroll nudge the panel stays parked down in the list, forcing a manual
+  // scroll to actually see the info they just opened.
+  function scrollLeftPanelToTop() {
+    const node = leftPanelRef.current;
+    if (!node) return;
+    if (typeof node.scrollTo === "function") {
+      node.scrollTo({ top: 0, behavior: "smooth" });
+    } else {
+      node.scrollTop = 0;
+    }
+  }
 
   useEffect(() => {
-    const nextHref = buildWorkstationHref(activeStage, operatorMode);
+    const panelForUrl: WorkstationDeskPanel | null =
+      activeTopBarNav === "drivers" || activeTopBarNav === "routes" ? activeTopBarNav : null;
+    const nextHref = buildWorkstationHref(activeStage, operatorMode, panelForUrl);
     window.history.replaceState({}, "", nextHref);
-  }, [activeStage, operatorMode]);
+  }, [activeStage, operatorMode, activeTopBarNav]);
 
   useEffect(() => {
     if (activeTopBarNav === "drivers" || activeTopBarNav === "routes") {
+      if (activeStage !== "morning_triage") {
+        setActiveTopBarNav(activeStage);
+      }
       return;
     }
 
-    setActiveTopBarNav(activeStage);
+    if (activeTopBarNav !== activeStage) {
+      setActiveTopBarNav(activeStage);
+    }
   }, [activeStage, activeTopBarNav]);
 
   function handleTopBarStageChange(stage: WorkstationStage) {
     setActiveTopBarNav(stage);
     setActiveStage(stage);
+    if (stage === "morning_triage") {
+      setDeskPanelView("drivers");
+      setSelectedRouteTripId(null);
+      setIsCreateRouteModalOpen(false);
+    }
   }
 
   function handleTopBarDeskPanelChange(panel: DeskPanelView) {
-    setActiveTopBarNav(panel);
+    setActiveStage("morning_triage");
     setDeskPanelView(panel);
+    setActiveTopBarNav(panel);
   }
 
   useEffect(() => {
@@ -644,12 +782,66 @@ export function DispatchWorkstation({
     null;
   const visibleDriverDeskRows = driverDeskRows.filter((driver) => driver.driverId !== selectedDeskDriver?.driverId);
 
+  const selectedDeskDriverTrip = useMemo(() => {
+    if (!selectedDeskDriver?.activeTripId || !snapshot) {
+      return null;
+    }
+    return (
+      snapshot.activeTrips.find((trip) => trip.tripId === selectedDeskDriver.activeTripId) ??
+      snapshot.activeTrips.find((trip) => trip.driverId === selectedDeskDriver.driverId) ??
+      null
+    );
+  }, [selectedDeskDriver, snapshot]);
+
   const routeDeskRows = useMemo(() => {
     return (routeDesk?.routes ?? []).map((route) => ({
       ...route,
       driverName: driverById.get(route.driverId)?.name ?? `Driver ${route.driverId}`
     }));
   }, [driverById, routeDesk]);
+
+  const routeStatusSeverity: Record<TripStatus, number> = {
+    hos_risk: 0,
+    long_idle: 1,
+    route_deviation: 2,
+    eta_slip: 3,
+    on_track: 4
+  };
+
+  const filteredRouteDeskRows = useMemo(() => {
+    const search = routeDeskSearch.trim().toLowerCase();
+    return routeDeskRows
+      .filter((route) => routeDeskFilter === "all" || route.status === routeDeskFilter)
+      .filter((route) => {
+        if (!search) {
+          return true;
+        }
+        const haystack = [
+          route.tripId,
+          route.driverName,
+          route.loadId,
+          route.customer,
+          route.routeContext,
+          route.origin?.city,
+          route.destination?.city
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+        return haystack.includes(search);
+      })
+      .sort((left, right) => {
+        const severity = routeStatusSeverity[left.status] - routeStatusSeverity[right.status];
+        if (severity !== 0) {
+          return severity;
+        }
+        return left.etaMs - right.etaMs;
+      });
+  }, [routeDeskRows, routeDeskFilter, routeDeskSearch, routeStatusSeverity]);
+
+  const selectedRouteTrip =
+    routeDeskRows.find((route) => route.tripId === selectedRouteTripId) ?? routeDeskRows[0] ?? null;
+  const selectedRouteDriver = selectedRouteTrip ? driverById.get(selectedRouteTrip.driverId) ?? null : null;
 
   const selectedRouteLoad =
     snapshot?.pendingLoads.find((load) => load.loadId === routeCreateForm.loadId) ?? null;
@@ -751,6 +943,36 @@ export function DispatchWorkstation({
     }));
   }, [snapshot]);
 
+  useEffect(() => {
+    const routes = routeDesk?.routes ?? [];
+    if (routes.length === 0) {
+      if (selectedRouteTripId !== null) {
+        setSelectedRouteTripId(null);
+      }
+      return;
+    }
+
+    if (!selectedRouteTripId || !routes.some((trip) => trip.tripId === selectedRouteTripId)) {
+      setSelectedRouteTripId(routes[0].tripId);
+    }
+  }, [routeDesk, selectedRouteTripId]);
+
+  useEffect(() => {
+    const trip = (routeDesk?.routes ?? []).find((row) => row.tripId === selectedRouteTripId) ?? null;
+    if (!trip) {
+      setRouteEtaDraft("");
+      setRouteLatDraft("");
+      setRouteLngDraft("");
+      setRouteDriverDraft("");
+      return;
+    }
+
+    setRouteEtaDraft(toLocalDateTimeInputValue(trip.etaMs));
+    setRouteLatDraft(trip.currentLoc.lat.toFixed(4));
+    setRouteLngDraft(trip.currentLoc.lng.toFixed(4));
+    setRouteDriverDraft(String(trip.driverId));
+  }, [routeDesk, selectedRouteTripId]);
+
   async function handleCreateRoute() {
     if (!routeCreateForm.driverId || !routeCreateForm.loadId) {
       setRouteDeskMessage("Pick a driver and a load before creating a route.");
@@ -775,7 +997,10 @@ export function DispatchWorkstation({
         throw new Error((payload as { message?: string }).message ?? "Unable to create route.");
       }
 
-      setRouteDeskMessage(`Route ${(payload as RouteDeskItem).tripId} created and saved.`);
+      const created = payload as RouteDeskItem;
+      setRouteDeskMessage(`Route ${created.tripId} created and saved.`);
+      setIsCreateRouteModalOpen(false);
+      setSelectedRouteTripId(created.tripId);
       await refreshAll(true);
     } catch (error) {
       setRouteDeskMessage(error instanceof Error ? error.message : "Unable to create route.");
@@ -798,11 +1023,50 @@ export function DispatchWorkstation({
       }
 
       setRouteDeskMessage(`Route ${tripId} removed from the database.`);
+      if (selectedRouteTripId === tripId) {
+        setSelectedRouteTripId(null);
+      }
       await refreshAll(true);
     } catch (error) {
       setRouteDeskMessage(error instanceof Error ? error.message : "Unable to delete route.");
     } finally {
       setDeletingRouteTripId(null);
+    }
+  }
+
+  async function handleUpdateRoute(
+    tripId: string,
+    field: "status" | "eta" | "currentLoc" | "driver",
+    body: RouteDeskUpdateRequest
+  ) {
+    setUpdatingTripField(field);
+    setRouteDeskMessage(null);
+
+    try {
+      const response = await fetch(`/api/routes/${encodeURIComponent(tripId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error((payload as { message?: string }).message ?? "Unable to update route.");
+      }
+
+      const updatedTrip = payload as RouteDeskItem;
+      setRouteDesk((current) => {
+        if (!current) {
+          return current;
+        }
+        const next = current.routes.map((trip) => (trip.tripId === updatedTrip.tripId ? updatedTrip : trip));
+        return { ...current, routes: next };
+      });
+      setRouteDeskMessage(`Trip ${tripId} updated and saved to DB.`);
+      await loadSnapshot(false);
+    } catch (error) {
+      setRouteDeskMessage(error instanceof Error ? error.message : "Unable to update route.");
+    } finally {
+      setUpdatingTripField(null);
     }
   }
 
@@ -1042,9 +1306,26 @@ export function DispatchWorkstation({
         selectedScore,
         selectedBackhaul,
         backhaulOpen,
-        driverById
+        driverById,
+        selectedDeskDriverId: activeTopBarNav === "drivers" ? selectedDeskDriverId : null,
+        isDriversView: activeTopBarNav === "drivers",
+        isRoutesView: activeTopBarNav === "routes",
+        selectedTripId: activeTopBarNav === "routes" ? selectedRouteTripId : null
       }),
-    [activeStage, snapshot, activeTrip, openDraft, parsedLoad, selectedScore, selectedBackhaul, backhaulOpen, driverById]
+    [
+      activeStage,
+      snapshot,
+      activeTrip,
+      openDraft,
+      parsedLoad,
+      selectedScore,
+      selectedBackhaul,
+      backhaulOpen,
+      driverById,
+      activeTopBarNav,
+      selectedDeskDriverId,
+      selectedRouteTripId
+    ]
   );
 
   const monitoringHeadline = openDraft
@@ -1115,6 +1396,7 @@ export function DispatchWorkstation({
     >
       <div className="flex h-full min-h-0 flex-col gap-6 xl:flex-row">
         <section
+          ref={leftPanelRef}
           className="navpro-scrollbar relative overflow-y-auto rounded-[28px] border border-[color:var(--navpro-border-soft)] bg-[color:var(--navpro-bg-panel)] shadow-[0_24px_70px_rgba(16,32,51,0.08)] xl:h-full xl:min-h-0 xl:shrink-0"
           style={viewportWidth >= 1280 ? { width: panelWidth } : undefined}
         >
@@ -1139,7 +1421,7 @@ export function DispatchWorkstation({
                       <div className="mt-1 text-sm font-bold text-[color:var(--navpro-text-strong)]">
                         {deskPanelView === "drivers"
                           ? "Inspect the live roster and selected seat before dispatch."
-                          : "Review every saved route, then create or remove routes directly from the database."}
+                          : "Manage every active trip — pick one to inspect ETA, HOS, GPS, and edit it live in the database."}
                       </div>
                     </div>
                     <div className="rounded-full bg-[color:var(--navpro-bg-muted)] px-3 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-[color:var(--navpro-text-muted)]">
@@ -1239,6 +1521,109 @@ export function DispatchWorkstation({
                             </div>
                           </div>
 
+                          {selectedDeskDriverTrip ? (
+                            (() => {
+                              const trip = selectedDeskDriverTrip;
+                              const statusBadge = getTripStatusBadge(trip.status);
+                              const referenceMs = snapshot?.fetchedAtMs ?? Date.now();
+                              const remainingMiles = trip.remainingMiles ?? null;
+                              const originLabel = trip.origin
+                                ? `${trip.origin.city}, ${trip.origin.state}`
+                                : "Origin pending";
+                              const destinationLabel = trip.destination
+                                ? `${trip.destination.city}, ${trip.destination.state}`
+                                : "Destination pending";
+
+                              return (
+                                <div className="mt-3 rounded-xl border border-[#c7d7ff] bg-white p-4">
+                                  <div className="flex flex-wrap items-center justify-between gap-2">
+                                    <div className="flex items-center gap-2">
+                                      <Glyph name="route" className="h-4 w-4 text-[#214cba]" />
+                                      <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-muted)]">
+                                        Live trip
+                                      </div>
+                                      <div className="text-[12px] font-bold text-[color:var(--navpro-text-strong)]">
+                                        {trip.tripId}
+                                      </div>
+                                    </div>
+                                    <div className={`rounded-full px-2 py-1 text-[10px] font-bold uppercase tracking-[0.08em] ${statusBadge.tone}`}>
+                                      {statusBadge.label}
+                                    </div>
+                                  </div>
+
+                                  <div className="mt-3 flex items-center justify-between gap-3">
+                                    <div className="min-w-0">
+                                      <div className="truncate text-sm font-bold text-[color:var(--navpro-text-strong)]">{originLabel}</div>
+                                      <div className="text-[11px] text-[color:var(--navpro-text-muted)]">Pickup</div>
+                                    </div>
+                                    <Glyph name="route" className="h-4 w-4 text-[color:var(--navpro-text-muted)]" />
+                                    <div className="min-w-0 text-right">
+                                      <div className="truncate text-sm font-bold text-[color:var(--navpro-text-strong)]">{destinationLabel}</div>
+                                      <div className="text-[11px] text-[color:var(--navpro-text-muted)]">Drop</div>
+                                    </div>
+                                  </div>
+
+                                  <div className="mt-3 grid grid-cols-2 gap-2 text-[12px] xl:grid-cols-4">
+                                    <div className="rounded-lg bg-[color:var(--navpro-bg-muted)] px-3 py-3">
+                                      <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-subtle)]">ETA</div>
+                                      <div className="mt-1 text-sm font-bold text-[color:var(--navpro-text-strong)]">
+                                        {formatTime(trip.etaMs)}
+                                      </div>
+                                      <div className="mt-1 text-[11px] text-[color:var(--navpro-text-muted)]">{formatDateTime(trip.etaMs)}</div>
+                                    </div>
+                                    <div className="rounded-lg bg-[color:var(--navpro-bg-muted)] px-3 py-3">
+                                      <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-subtle)]">Time left</div>
+                                      <div className="mt-1 text-sm font-bold text-[color:var(--navpro-text-strong)]">
+                                        {formatRemainingDuration(trip.etaMs, referenceMs)}
+                                      </div>
+                                      <div className="mt-1 text-[11px] text-[color:var(--navpro-text-muted)]">vs sync {formatTime(referenceMs)}</div>
+                                    </div>
+                                    <div className="rounded-lg bg-[color:var(--navpro-bg-muted)] px-3 py-3">
+                                      <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-subtle)]">Distance left</div>
+                                      <div className="mt-1 text-sm font-bold text-[color:var(--navpro-text-strong)]">
+                                        {remainingMiles != null ? `${formatNumber(remainingMiles)} mi` : "Unavailable"}
+                                      </div>
+                                      <div className="mt-1 text-[11px] text-[color:var(--navpro-text-muted)]">
+                                        {trip.plannedRoute.length} route pts
+                                      </div>
+                                    </div>
+                                    <div className="rounded-lg bg-[color:var(--navpro-bg-muted)] px-3 py-3">
+                                      <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-subtle)]">Current GPS</div>
+                                      <div className="mt-1 text-sm font-bold text-[color:var(--navpro-text-strong)]">
+                                        {trip.currentLoc.lat.toFixed(2)}, {trip.currentLoc.lng.toFixed(2)}
+                                      </div>
+                                      <div className="mt-1 text-[11px] text-[color:var(--navpro-text-muted)]">
+                                        {trip.routeContext ?? "Live ping"}
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  <div className="mt-3 flex items-center gap-2 rounded-lg bg-[#f7faff] px-3 py-2 text-[11px] text-[#214cba]">
+                                    <Glyph name="map" className="h-4 w-4" />
+                                    Route highlighted on the fleet map.
+                                  </div>
+                                </div>
+                              );
+                            })()
+                          ) : (
+                            <div className="mt-3 rounded-xl border border-dashed border-[color:var(--navpro-border-soft)] bg-white p-4">
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="flex items-center gap-2">
+                                  <Glyph name="truck" className="h-4 w-4 text-[color:var(--navpro-text-muted)]" />
+                                  <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-muted)]">
+                                    No active trip
+                                  </div>
+                                </div>
+                                <div className="rounded-full bg-[#E6F6EE] px-2 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-[#0E8A5B]">
+                                  Available
+                                </div>
+                              </div>
+                              <div className="mt-2 text-[12px] text-[color:var(--navpro-text-muted)]">
+                                {selectedDeskDriver.name.split(" ")[0]} is idle near {selectedDeskDriver.homeBase.city}. GPS last pinged at {formatTime(selectedDeskDriver.currentLocation.updatedAtMs)} ({selectedDeskDriver.currentLocation.lat.toFixed(2)}, {selectedDeskDriver.currentLocation.lng.toFixed(2)}).
+                              </div>
+                            </div>
+                          )}
+
                           {selectedDeskDriver.complianceFlags.length > 0 ? (
                             <div className="mt-3 space-y-2">
                               {selectedDeskDriver.complianceFlags.map((flag) => (
@@ -1256,14 +1641,17 @@ export function DispatchWorkstation({
                       )}
 
                       <div className="mt-4 space-y-2">
-                        {visibleDriverDeskRows.slice(0, 6).map((driver) => {
+                        {visibleDriverDeskRows.map((driver) => {
                           const status = getDriverDeskStatus(driver);
                           const isActive = selectedDeskDriver?.driverId === driver.driverId;
                           return (
                             <button
                               key={driver.driverId}
                               type="button"
-                              onClick={() => setSelectedDeskDriverId(driver.driverId)}
+                              onClick={() => {
+                                setSelectedDeskDriverId(driver.driverId);
+                                scrollLeftPanelToTop();
+                              }}
                               className={[
                                 "w-full rounded-xl border p-4 text-left transition-colors",
                                 isActive
@@ -1302,166 +1690,426 @@ export function DispatchWorkstation({
                       </div>
                     </>
                   ) : (
-                    <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,320px)_minmax(0,1fr)]">
-                      <div className="rounded-xl border border-[color:var(--navpro-border-soft)] bg-[color:var(--navpro-bg-muted)] p-4">
-                        <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-muted)]">
-                          Create route
-                        </div>
-                        <div className="mt-3 space-y-3">
-                          <label className="block">
-                            <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-muted)]">
-                              Driver
-                            </div>
-                            <select
-                              value={routeCreateForm.driverId}
-                              onChange={(event) =>
-                                setRouteCreateForm((current) => ({
-                                  ...current,
-                                  driverId: event.target.value
-                                }))
-                              }
-                              className="w-full rounded-xl border border-[color:var(--navpro-border-soft)] bg-white px-3 py-2.5 text-[13px] text-[color:var(--navpro-text-strong)] outline-none"
-                            >
-                              {(snapshot?.drivers ?? []).map((driver) => (
-                                <option key={driver.driverId} value={driver.driverId}>
-                                  {driver.name} • #{driver.driverId}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-
-                          <label className="block">
-                            <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-muted)]">
-                              Load
-                            </div>
-                            <select
-                              value={routeCreateForm.loadId}
-                              onChange={(event) =>
-                                setRouteCreateForm((current) => ({
-                                  ...current,
-                                  loadId: event.target.value
-                                }))
-                              }
-                              className="w-full rounded-xl border border-[color:var(--navpro-border-soft)] bg-white px-3 py-2.5 text-[13px] text-[color:var(--navpro-text-strong)] outline-none"
-                            >
-                              {(snapshot?.pendingLoads ?? []).map((load) => (
-                                <option key={load.loadId} value={load.loadId}>
-                                  {load.loadId} • {load.origin.city} to {load.destination.city}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-
-                          <label className="block">
-                            <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-muted)]">
-                              Status
-                            </div>
-                            <select
-                              value={routeCreateForm.status}
-                              onChange={(event) =>
-                                setRouteCreateForm((current) => ({
-                                  ...current,
-                                  status: event.target.value as NonNullable<RouteDeskCreateRequest["status"]>
-                                }))
-                              }
-                              className="w-full rounded-xl border border-[color:var(--navpro-border-soft)] bg-white px-3 py-2.5 text-[13px] text-[color:var(--navpro-text-strong)] outline-none"
-                            >
-                              {routeDeskStatusOptions.map((statusOption) => (
-                                <option key={statusOption.value} value={statusOption.value}>
-                                  {statusOption.label}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                        </div>
-
-                        {selectedRouteLoad ? (
-                          <div className="mt-4 rounded-xl border border-[color:var(--navpro-border-soft)] bg-white px-3 py-3 text-[12px] text-[color:var(--navpro-text-muted)]">
-                            <div className="font-semibold text-[color:var(--navpro-text-strong)]">
-                              {selectedRouteLoad.origin.city}, {selectedRouteLoad.origin.state} to {selectedRouteLoad.destination.city}, {selectedRouteLoad.destination.state}
-                            </div>
-                            <div className="mt-1">{formatMoney(selectedRouteLoad.rateUsd)} • {selectedRouteLoad.customer ?? "Unassigned broker"}</div>
-                            <div className="mt-1">Pickup window ends {formatDateTime(selectedRouteLoad.pickupEndMs)}</div>
-                          </div>
-                        ) : null}
-
+                    <div className="mt-4 space-y-4">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <input
+                          type="search"
+                          value={routeDeskSearch}
+                          onChange={(event) => setRouteDeskSearch(event.target.value)}
+                          placeholder="Search by trip, driver, load, customer or city"
+                          aria-label="Search active trips"
+                          className="w-full rounded-xl border border-[color:var(--navpro-border-soft)] bg-white px-3 py-2.5 text-[13px] text-[color:var(--navpro-text-strong)] outline-none placeholder:text-[color:var(--navpro-text-muted)] sm:max-w-sm"
+                        />
                         <button
                           type="button"
-                          onClick={() => void handleCreateRoute()}
-                          disabled={isSavingRoute || !routeCreateForm.driverId || !routeCreateForm.loadId}
-                          className="mt-4 w-full rounded-xl bg-[linear-gradient(135deg,#214cba_0%,#4066d4_100%)] px-4 py-3 text-[12px] font-bold text-white shadow-[0_4px_14px_rgba(33,76,186,0.25)] disabled:opacity-60"
+                          onClick={() => setIsCreateRouteModalOpen(true)}
+                          className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl bg-[linear-gradient(135deg,#214cba_0%,#4066d4_100%)] px-4 py-2.5 text-[12px] font-bold text-white shadow-[0_4px_14px_rgba(33,76,186,0.25)]"
                         >
-                          {isSavingRoute ? "Creating route..." : "Create route in DB"}
+                          + New trip
                         </button>
                       </div>
 
-                      <div className="space-y-3">
-                        {routeDeskRows.length === 0 ? (
-                          <div className="rounded-xl border border-dashed border-[color:var(--navpro-border-soft)] px-4 py-5 text-[12px] text-[color:var(--navpro-text-muted)]">
-                            No saved routes yet. Create the first route from the load board.
-                          </div>
-                        ) : (
-                          routeDeskRows.map((route) => (
-                            <div key={route.tripId} className="rounded-xl border border-[color:var(--navpro-border-soft)] bg-[color:var(--navpro-bg-muted)] p-4">
+                      <div className="flex flex-wrap gap-2">
+                        {routeDeskFilterOptions.map((filter) => {
+                          const count =
+                            filter.key === "all"
+                              ? routeDeskRows.length
+                              : routeDeskRows.filter((route) => route.status === filter.key).length;
+                          const isActive = routeDeskFilter === filter.key;
+                          return (
+                            <button
+                              key={filter.key}
+                              type="button"
+                              onClick={() => setRouteDeskFilter(filter.key)}
+                              className={[
+                                "rounded-full border px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.08em]",
+                                isActive
+                                  ? "border-[#214cba] bg-[#E7F0FF] text-[#214cba]"
+                                  : "border-[color:var(--navpro-border-soft)] bg-white text-[color:var(--navpro-text-muted)]"
+                              ].join(" ")}
+                            >
+                              {filter.label} {count}
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      {selectedRouteTrip ? (
+                        (() => {
+                          const trip = selectedRouteTrip;
+                          const driver = selectedRouteDriver;
+                          const statusBadge = getTripStatusBadge(trip.status);
+                          const referenceMs = snapshot?.fetchedAtMs ?? Date.now();
+                          const driverName = driver?.name ?? `Driver #${trip.driverId}`;
+                          const driverHosLabel = driver
+                            ? `${formatHours(driver.hosRemainingMin)} • ${driver.hosStatus.replace(/_/g, " ")}`
+                            : "HOS unavailable";
+                          const driverPerformanceLabel = driver?.performance
+                            ? `${formatPerformanceDelta(driver.performance.actualMiles, driver.performance.scheduleMiles)} vs plan`
+                            : "No performance feed";
+                          const lastPing = driver
+                            ? formatTime(driver.currentLocation.updatedAtMs)
+                            : formatTime(trip.lastSeenAtMs);
+
+                          const pickupAnchor = trip.origin ?? trip.currentLoc;
+                          const rankedDriverOptions = (snapshot?.drivers ?? [])
+                            .map((candidate) => {
+                              const deadheadMiles = haversineMiles(
+                                candidate.currentLocation.lat,
+                                candidate.currentLocation.lng,
+                                pickupAnchor.lat,
+                                pickupAnchor.lng
+                              );
+                              const proximityScore = 35 * (1 - clamp(deadheadMiles / 300, 0, 1));
+                              const hosScore = 20 * clamp(candidate.hosRemainingMin / 720, 0, 1);
+                              const criticalPenalty = candidate.complianceFlags.some((flag) => flag.severity === "critical") ? 40 : 0;
+                              const warnPenalty = candidate.complianceFlags.filter((flag) => flag.severity === "warn").length * 4;
+                              const engineScore = proximityScore + hosScore - criticalPenalty - warnPenalty;
+                              return { candidate, deadheadMiles, engineScore };
+                            })
+                            .sort((left, right) => right.engineScore - left.engineScore);
+
+                          return (
+                            <div className="rounded-xl border border-[#c7d7ff] bg-[#f7faff] p-4">
                               <div className="flex flex-wrap items-start justify-between gap-3">
-                                <div>
-                                  <div className="flex flex-wrap items-center gap-2">
-                                    <div className="text-sm font-bold text-[color:var(--navpro-text-strong)]">{route.tripId}</div>
-                                    <div className={`rounded-full px-2 py-1 text-[10px] font-bold uppercase tracking-[0.08em] ${getRouteStatusTone(route.status)}`}>
-                                      {route.status.replace(/_/g, " ")}
+                                <div className="flex items-center gap-3">
+                                  <Avatar name={driverName} tone="blue" />
+                                  <div>
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <div className="text-base font-bold text-[color:var(--navpro-text-strong)]">{trip.tripId}</div>
+                                      <div className={`rounded-full px-2 py-1 text-[10px] font-bold uppercase tracking-[0.08em] ${statusBadge.tone}`}>
+                                        {statusBadge.label}
+                                      </div>
                                     </div>
+                                    <div className="mt-1 text-xs text-[color:var(--navpro-text-muted)]">
+                                      {driverName} • Unit #{trip.driverId}
+                                      {driver?.phone ? ` • ${driver.phone}` : ""}
+                                    </div>
+                                    <div className="mt-1 text-[11px] text-[color:var(--navpro-text-muted)]">{trip.routeContext}</div>
                                   </div>
-                                  <div className="mt-1 text-[12px] text-[color:var(--navpro-text-muted)]">{route.routeContext}</div>
                                 </div>
 
                                 <button
                                   type="button"
-                                  onClick={() => void handleDeleteRoute(route.tripId)}
-                                  disabled={deletingRouteTripId === route.tripId}
-                                  className="rounded-lg border border-[#f1c7c7] bg-white px-3 py-2 text-[11px] font-semibold text-[#a33939] disabled:opacity-60"
+                                  onClick={() => {
+                                    if (driver) {
+                                      setSelectedDeskDriverId(driver.driverId);
+                                      handleTopBarDeskPanelChange("drivers");
+                                    }
+                                  }}
+                                  disabled={!driver}
+                                  className="rounded-lg border border-[color:var(--navpro-border-soft)] bg-white px-3 py-2 text-[11px] font-semibold text-[#214cba] disabled:opacity-50"
                                 >
-                                  {deletingRouteTripId === route.tripId ? "Removing..." : "Delete"}
+                                  Open driver desk
                                 </button>
                               </div>
 
-                              <div className="mt-3 grid gap-2 text-[11px] sm:grid-cols-2 xl:grid-cols-4">
-                                <div className="rounded-lg bg-white px-3 py-3 text-[color:var(--navpro-text-muted)]">
-                                  <div className="font-semibold text-[color:var(--navpro-text-strong)]">Driver</div>
-                                  <div className="mt-1">{route.driverName} • #{route.driverId}</div>
+                              <div className="mt-3 grid grid-cols-2 gap-2 text-[12px] xl:grid-cols-4">
+                                <div className="rounded-lg bg-white px-3 py-3">
+                                  <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-subtle)]">ETA</div>
+                                  <div className="mt-1 text-sm font-bold text-[color:var(--navpro-text-strong)]">{formatTime(trip.etaMs)}</div>
+                                  <div className="mt-1 text-[11px] text-[color:var(--navpro-text-muted)]">{formatDateTime(trip.etaMs)}</div>
                                 </div>
-                                <div className="rounded-lg bg-white px-3 py-3 text-[color:var(--navpro-text-muted)]">
-                                  <div className="font-semibold text-[color:var(--navpro-text-strong)]">Load</div>
-                                  <div className="mt-1">{route.loadId}</div>
-                                  <div className="mt-1">{route.commodity ?? "General freight"}</div>
+                                <div className="rounded-lg bg-white px-3 py-3">
+                                  <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-subtle)]">Time left</div>
+                                  <div className="mt-1 text-sm font-bold text-[color:var(--navpro-text-strong)]">
+                                    {formatRemainingDuration(trip.etaMs, referenceMs)}
+                                  </div>
+                                  <div className="mt-1 text-[11px] text-[color:var(--navpro-text-muted)]">vs sync {formatTime(referenceMs)}</div>
                                 </div>
-                                <div className="rounded-lg bg-white px-3 py-3 text-[color:var(--navpro-text-muted)]">
-                                  <div className="font-semibold text-[color:var(--navpro-text-strong)]">ETA / miles</div>
-                                  <div className="mt-1">{formatDateTime(route.etaMs)}</div>
-                                  <div className="mt-1">{route.remainingMiles != null ? `${formatNumber(route.remainingMiles)} mi remaining` : "Distance unavailable"}</div>
+                                <div className="rounded-lg bg-white px-3 py-3">
+                                  <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-subtle)]">Distance left</div>
+                                  <div className="mt-1 text-sm font-bold text-[color:var(--navpro-text-strong)]">
+                                    {trip.remainingMiles != null ? `${formatNumber(trip.remainingMiles)} mi` : "Unavailable"}
+                                  </div>
+                                  <div className="mt-1 text-[11px] text-[color:var(--navpro-text-muted)]">{trip.routePointCount} route pts</div>
                                 </div>
-                                <div className="rounded-lg bg-white px-3 py-3 text-[color:var(--navpro-text-muted)]">
-                                  <div className="font-semibold text-[color:var(--navpro-text-strong)]">Sync</div>
-                                  <div className="mt-1">Seen {formatDateTime(route.lastSeenAtMs)}</div>
-                                  <div className="mt-1">{route.routePointCount} route points</div>
+                                <div className="rounded-lg bg-white px-3 py-3">
+                                  <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-subtle)]">HOS</div>
+                                  <div className="mt-1 text-sm font-bold text-[color:var(--navpro-text-strong)]">{driverHosLabel}</div>
+                                  <div className="mt-1 text-[11px] text-[color:var(--navpro-text-muted)]">{driverPerformanceLabel}</div>
                                 </div>
                               </div>
 
-                              <div className="mt-3 grid gap-2 text-[11px] sm:grid-cols-2">
-                                <div className="rounded-lg bg-white px-3 py-3 text-[color:var(--navpro-text-muted)]">
-                                  <div className="font-semibold text-[color:var(--navpro-text-strong)]">Current GPS</div>
-                                  <div className="mt-1">{route.currentLoc.lat.toFixed(2)}, {route.currentLoc.lng.toFixed(2)}</div>
-                                  <div className="mt-1">{route.origin ? `${route.origin.city}, ${route.origin.state}` : "Origin unavailable"}</div>
-                                </div>
-                                <div className="rounded-lg bg-white px-3 py-3 text-[color:var(--navpro-text-muted)]">
-                                  <div className="font-semibold text-[color:var(--navpro-text-strong)]">Delivery</div>
-                                  <div className="mt-1">
-                                    {route.destination ? `${route.destination.city}, ${route.destination.state}` : "Destination unavailable"}
+                              <div className="mt-3 grid gap-2 text-[12px] sm:grid-cols-2">
+                                <div className="rounded-lg bg-white px-3 py-3">
+                                  <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-subtle)]">Pickup</div>
+                                  <div className="mt-1 text-sm font-bold text-[color:var(--navpro-text-strong)]">
+                                    {trip.origin ? `${trip.origin.city}, ${trip.origin.state}` : "Origin pending"}
                                   </div>
-                                  <div className="mt-1">{route.rateUsd != null ? formatMoney(route.rateUsd) : "Rate unavailable"}</div>
+                                  {trip.pickupEndMs ? (
+                                    <div className="mt-1 text-[11px] text-[color:var(--navpro-text-muted)]">
+                                      Pickup window ends {formatDateTime(trip.pickupEndMs)}
+                                    </div>
+                                  ) : null}
+                                </div>
+                                <div className="rounded-lg bg-white px-3 py-3">
+                                  <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-subtle)]">Drop</div>
+                                  <div className="mt-1 text-sm font-bold text-[color:var(--navpro-text-strong)]">
+                                    {trip.destination ? `${trip.destination.city}, ${trip.destination.state}` : "Destination pending"}
+                                  </div>
+                                  <div className="mt-1 text-[11px] text-[color:var(--navpro-text-muted)]">
+                                    Load {trip.loadId} • {trip.commodity ?? "General freight"}
+                                    {trip.rateUsd != null ? ` • ${formatMoney(trip.rateUsd)}` : ""}
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="mt-3 flex items-center gap-2 rounded-lg bg-[#eef3ff] px-3 py-2 text-[11px] text-[#214cba]">
+                                <Glyph name="map" className="h-4 w-4" />
+                                Trip path highlighted on the fleet map • last GPS ping {lastPing}
+                              </div>
+
+                              <div className="mt-4 rounded-xl border border-[color:var(--navpro-border-soft)] bg-white p-4">
+                                <div className="flex items-center justify-between gap-2">
+                                  <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-muted)]">
+                                    Manage trip
+                                  </div>
+                                  <div className="text-[11px] text-[color:var(--navpro-text-muted)]">
+                                    Saved {formatDateTime(trip.lastSeenAtMs)}
+                                  </div>
+                                </div>
+
+                                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                                  <label className="block">
+                                    <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-muted)]">
+                                      Status
+                                    </div>
+                                    <select
+                                      value={trip.status}
+                                      disabled={updatingTripField === "status"}
+                                      onChange={(event) =>
+                                        void handleUpdateRoute(trip.tripId, "status", {
+                                          status: event.target.value as TripStatus
+                                        })
+                                      }
+                                      className="w-full rounded-xl border border-[color:var(--navpro-border-soft)] bg-white px-3 py-2.5 text-[13px] text-[color:var(--navpro-text-strong)] outline-none disabled:opacity-60"
+                                    >
+                                      {routeDeskStatusOptions.map((statusOption) => (
+                                        <option key={statusOption.value} value={statusOption.value}>
+                                          {statusOption.label}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </label>
+
+                                  <label className="block">
+                                    <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-muted)]">
+                                      ETA
+                                    </div>
+                                    <div className="flex items-stretch gap-2">
+                                      <input
+                                        type="datetime-local"
+                                        value={routeEtaDraft}
+                                        onChange={(event) => setRouteEtaDraft(event.target.value)}
+                                        className="min-w-0 flex-1 rounded-xl border border-[color:var(--navpro-border-soft)] bg-white px-3 py-2.5 text-[13px] text-[color:var(--navpro-text-strong)] outline-none"
+                                      />
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          const ms = parseLocalDateTimeInputValue(routeEtaDraft);
+                                          if (ms === null) {
+                                            setRouteDeskMessage("Pick a valid ETA before saving.");
+                                            return;
+                                          }
+                                          void handleUpdateRoute(trip.tripId, "eta", { etaMs: ms });
+                                        }}
+                                        disabled={updatingTripField === "eta"}
+                                        className="shrink-0 rounded-xl border border-[color:var(--navpro-border-soft)] bg-[color:var(--navpro-bg-muted)] px-3 py-2 text-[11px] font-semibold text-[#214cba] disabled:opacity-60"
+                                      >
+                                        {updatingTripField === "eta" ? "Saving..." : "Save"}
+                                      </button>
+                                    </div>
+                                  </label>
+                                </div>
+
+                                <div className="mt-3">
+                                  <div className="mb-1 flex items-center justify-between gap-2">
+                                    <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-muted)]">
+                                      Driver
+                                    </div>
+                                    <div className="text-[10px] text-[color:var(--navpro-text-subtle)]">
+                                      Ranked by dispatch engine
+                                    </div>
+                                  </div>
+                                  <div className="flex items-stretch gap-2">
+                                    <select
+                                      value={routeDriverDraft}
+                                      onChange={(event) => setRouteDriverDraft(event.target.value)}
+                                      disabled={updatingTripField === "driver" || rankedDriverOptions.length === 0}
+                                      aria-label="Assigned driver"
+                                      className="min-w-0 flex-1 rounded-xl border border-[color:var(--navpro-border-soft)] bg-white px-3 py-2.5 text-[13px] text-[color:var(--navpro-text-strong)] outline-none disabled:opacity-60"
+                                    >
+                                      {rankedDriverOptions.length === 0 ? (
+                                        <option value="">No drivers available</option>
+                                      ) : (
+                                        rankedDriverOptions.map(({ candidate, deadheadMiles, engineScore }) => {
+                                          const isCurrent = candidate.driverId === trip.driverId;
+                                          const miles = Math.round(deadheadMiles);
+                                          const score = Math.round(engineScore);
+                                          return (
+                                            <option key={candidate.driverId} value={String(candidate.driverId)}>
+                                              {`${candidate.name} • Unit #${candidate.driverId} • ${miles} mi • score ${score}${isCurrent ? " • current" : ""}`}
+                                            </option>
+                                          );
+                                        })
+                                      )}
+                                    </select>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const nextDriverId = Number(routeDriverDraft);
+                                        if (!Number.isFinite(nextDriverId) || nextDriverId <= 0) {
+                                          setRouteDeskMessage("Pick a driver before saving.");
+                                          return;
+                                        }
+                                        if (nextDriverId === trip.driverId) {
+                                          setRouteDeskMessage("Trip already assigned to that driver.");
+                                          return;
+                                        }
+                                        void handleUpdateRoute(trip.tripId, "driver", { driverId: nextDriverId });
+                                      }}
+                                      disabled={updatingTripField === "driver" || !routeDriverDraft}
+                                      className="shrink-0 rounded-xl border border-[color:var(--navpro-border-soft)] bg-[color:var(--navpro-bg-muted)] px-3 py-2 text-[11px] font-semibold text-[#214cba] disabled:opacity-60"
+                                    >
+                                      {updatingTripField === "driver" ? "Saving..." : "Save"}
+                                    </button>
+                                  </div>
+                                </div>
+
+                                <div className="mt-3">
+                                  <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-muted)]">
+                                    Override current GPS
+                                  </div>
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <input
+                                      type="number"
+                                      step="0.0001"
+                                      value={routeLatDraft}
+                                      onChange={(event) => setRouteLatDraft(event.target.value)}
+                                      placeholder="Latitude"
+                                      aria-label="Latitude override"
+                                      className="w-32 rounded-xl border border-[color:var(--navpro-border-soft)] bg-white px-3 py-2.5 text-[13px] text-[color:var(--navpro-text-strong)] outline-none"
+                                    />
+                                    <input
+                                      type="number"
+                                      step="0.0001"
+                                      value={routeLngDraft}
+                                      onChange={(event) => setRouteLngDraft(event.target.value)}
+                                      placeholder="Longitude"
+                                      aria-label="Longitude override"
+                                      className="w-32 rounded-xl border border-[color:var(--navpro-border-soft)] bg-white px-3 py-2.5 text-[13px] text-[color:var(--navpro-text-strong)] outline-none"
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const lat = Number(routeLatDraft);
+                                        const lng = Number(routeLngDraft);
+                                        if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+                                          setRouteDeskMessage("Latitude and longitude must be numbers.");
+                                          return;
+                                        }
+                                        void handleUpdateRoute(trip.tripId, "currentLoc", {
+                                          currentLoc: { lat, lng }
+                                        });
+                                      }}
+                                      disabled={updatingTripField === "currentLoc"}
+                                      className="rounded-xl border border-[color:var(--navpro-border-soft)] bg-[color:var(--navpro-bg-muted)] px-3 py-2 text-[11px] font-semibold text-[#214cba] disabled:opacity-60"
+                                    >
+                                      {updatingTripField === "currentLoc" ? "Saving..." : "Save GPS"}
+                                    </button>
+                                    <span className="text-[11px] text-[color:var(--navpro-text-muted)]">
+                                      Live GPS: {trip.currentLoc.lat.toFixed(2)}, {trip.currentLoc.lng.toFixed(2)}
+                                    </span>
+                                  </div>
+                                </div>
+
+                                <div className="mt-4 flex items-center justify-between gap-2 border-t border-[color:var(--navpro-border-soft)] pt-3">
+                                  <div className="text-[11px] text-[color:var(--navpro-text-muted)]">
+                                    Removing the trip clears it from the active trip mirror in the database.
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      if (window.confirm(`Delete trip ${trip.tripId}? This removes it from the database.`)) {
+                                        void handleDeleteRoute(trip.tripId);
+                                      }
+                                    }}
+                                    disabled={deletingRouteTripId === trip.tripId}
+                                    className="rounded-lg border border-[#f1c7c7] bg-white px-3 py-2 text-[11px] font-semibold text-[#a33939] disabled:opacity-60"
+                                  >
+                                    {deletingRouteTripId === trip.tripId ? "Removing..." : "Delete trip"}
+                                  </button>
                                 </div>
                               </div>
                             </div>
-                          ))
+                          );
+                        })()
+                      ) : null}
+
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-muted)]">
+                          <span>Active trips</span>
+                          <span>{filteredRouteDeskRows.length} of {routeDeskRows.length}</span>
+                        </div>
+
+                        {routeDeskRows.length === 0 ? (
+                          <div className="rounded-xl border border-dashed border-[color:var(--navpro-border-soft)] px-4 py-5 text-[12px] text-[color:var(--navpro-text-muted)]">
+                            No saved routes yet. Use <span className="font-semibold text-[#214cba]">+ New trip</span> to create the first one.
+                          </div>
+                        ) : filteredRouteDeskRows.length === 0 ? (
+                          <div className="rounded-xl border border-dashed border-[color:var(--navpro-border-soft)] px-4 py-5 text-[12px] text-[color:var(--navpro-text-muted)]">
+                            No trips match this filter or search.
+                          </div>
+                        ) : (
+                          filteredRouteDeskRows.map((route) => {
+                            const isActive = route.tripId === selectedRouteTrip?.tripId;
+                            const referenceMs = snapshot?.fetchedAtMs ?? Date.now();
+                            const driverForRow = driverById.get(route.driverId);
+                            return (
+                              <button
+                                key={route.tripId}
+                                type="button"
+                                onClick={() => {
+                                  setSelectedRouteTripId(route.tripId);
+                                  scrollLeftPanelToTop();
+                                }}
+                                className={[
+                                  "w-full rounded-xl border p-4 text-left transition-colors",
+                                  isActive
+                                    ? "border-[#214cba] bg-[#f7faff]"
+                                    : "border-[color:var(--navpro-border-soft)] bg-[color:var(--navpro-bg-muted)] hover:bg-white"
+                                ].join(" ")}
+                              >
+                                <div className="flex flex-wrap items-start justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <div className="text-sm font-bold text-[color:var(--navpro-text-strong)]">{route.tripId}</div>
+                                      <div className={`rounded-full px-2 py-1 text-[10px] font-bold uppercase tracking-[0.08em] ${getRouteStatusTone(route.status)}`}>
+                                        {route.status.replace(/_/g, " ")}
+                                      </div>
+                                    </div>
+                                    <div className="mt-1 truncate text-[12px] text-[color:var(--navpro-text-muted)]">{route.routeContext}</div>
+                                  </div>
+                                  <div className="text-right text-[11px] text-[color:var(--navpro-text-muted)]">
+                                    <div className="font-semibold text-[color:var(--navpro-text-strong)]">{formatTime(route.etaMs)}</div>
+                                    <div>{formatRemainingDuration(route.etaMs, referenceMs)}</div>
+                                  </div>
+                                </div>
+                                <div className="mt-3 grid grid-cols-3 gap-2 text-[11px]">
+                                  <div className="rounded-lg bg-white px-3 py-2 text-[color:var(--navpro-text-muted)]">
+                                    <span className="font-semibold text-[color:var(--navpro-text-strong)]">Driver</span> {route.driverName}
+                                  </div>
+                                  <div className="rounded-lg bg-white px-3 py-2 text-[color:var(--navpro-text-muted)]">
+                                    <span className="font-semibold text-[color:var(--navpro-text-strong)]">HOS</span> {driverForRow ? formatHours(driverForRow.hosRemainingMin) : "—"}
+                                  </div>
+                                  <div className="rounded-lg bg-white px-3 py-2 text-[color:var(--navpro-text-muted)]">
+                                    <span className="font-semibold text-[color:var(--navpro-text-strong)]">Miles</span> {route.remainingMiles != null ? `${formatNumber(route.remainingMiles)} mi` : "—"}
+                                  </div>
+                                </div>
+                              </button>
+                            );
+                          })
                         )}
                       </div>
                     </div>
@@ -2109,24 +2757,33 @@ export function DispatchWorkstation({
 
           {openDraft ? (
             isAlertPopupMinimized ? (
-              <div className="pointer-events-auto absolute right-6 top-24 z-30">
+              <div className="pointer-events-auto absolute bottom-6 right-6 z-30 animate-[alert-dock-in_220ms_ease-out]">
                 <button
                   type="button"
                   aria-label="Expand alert popup"
                   onClick={() => setIsAlertPopupMinimized(false)}
-                  className="rounded-2xl border border-[#ffd9d6] bg-white px-4 py-3 text-left shadow-[0_16px_40px_rgba(21,27,41,0.16)]"
+                  className="group flex items-center gap-3 rounded-full border border-[#ffd9d6] bg-white/95 py-2.5 pl-2.5 pr-4 text-left shadow-[0_18px_44px_rgba(186,26,26,0.22)] backdrop-blur-sm transition-all hover:-translate-y-0.5 hover:shadow-[0_24px_60px_rgba(186,26,26,0.28)]"
                 >
-                  <div className="flex items-center gap-3">
-                    <div className="rounded-full bg-[#fff5f4] p-2 text-[#BA1A1A]">
-                      <Glyph name="warning" className="h-4 w-4" />
+                  <span className="relative flex h-9 w-9 items-center justify-center rounded-full bg-[#fff0ee] text-[#BA1A1A]">
+                    <span className="absolute inset-0 rounded-full bg-[#BA1A1A]/18 animate-ping" />
+                    <Glyph name="warning" className="relative h-4 w-4" />
+                    {visibleDrafts.length > 1 ? (
+                      <span className="absolute -right-1 -top-1 flex h-5 min-w-[20px] items-center justify-center rounded-full border border-white bg-[#BA1A1A] px-1 text-[10px] font-bold text-white">
+                        {visibleDrafts.length}
+                      </span>
+                    ) : null}
+                  </span>
+                  <div className="leading-tight">
+                    <div className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[#BA1A1A]">
+                      {formatCountLabel(visibleDrafts.length, "live alert")}
                     </div>
-                    <div>
-                      <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#BA1A1A]">
-                        {formatCountLabel(visibleDrafts.length, "alert")}
-                      </div>
-                      <div className="text-sm font-bold text-[color:var(--navpro-text-strong)]">{openDraft.tripId}</div>
+                    <div className="text-[13px] font-bold text-[color:var(--navpro-text-strong)]">
+                      {openDraft.tripId}
                     </div>
                   </div>
+                  <span className="ml-1 rounded-full bg-[#fff5f4] px-2 py-1 text-[10px] font-semibold text-[#BA1A1A] opacity-0 transition-opacity group-hover:opacity-100">
+                    Expand
+                  </span>
                 </button>
               </div>
             ) : (
@@ -2255,6 +2912,26 @@ export function DispatchWorkstation({
                   <div className="mt-3 rounded-lg bg-[color:var(--navpro-bg-muted)] px-3 py-2 text-[12px] text-[color:var(--navpro-text-muted)]">
                     {selectedBackhaul.narrative}
                   </div>
+                  {(() => {
+                    const chip = hosFitChip(selectedBackhaul);
+                    return (
+                      <div className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-[color:var(--navpro-border-soft)] bg-white px-3 py-2 text-[12px]">
+                        <div className="flex items-center gap-2">
+                          <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.06em] ${chip.tone}`}>
+                            {chip.label}
+                          </span>
+                          <span className="text-[color:var(--navpro-text-muted)]">
+                            Round-trip needs {formatHours(selectedBackhaul.hosRequiredMin)} • driver has {formatHours(selectedBackhaul.hosAvailableMin)}
+                          </span>
+                        </div>
+                        {!selectedBackhaul.hosFeasible ? (
+                          <span className="text-[10px] font-semibold uppercase tracking-[0.06em] text-[#A33939]">
+                            Needs split / reset
+                          </span>
+                        ) : null}
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 <div className="mt-4">
@@ -2289,6 +2966,7 @@ export function DispatchWorkstation({
                   <div className="space-y-2">
                     {backhauls.map((option) => {
                       const isActive = option.returnLoad.loadId === selectedBackhaul.returnLoad.loadId;
+                      const chip = hosFitChip(option);
                       return (
                         <button
                           key={option.returnLoad.loadId}
@@ -2301,7 +2979,8 @@ export function DispatchWorkstation({
                             "w-full rounded-lg border px-3 py-3 text-left transition-colors",
                             isActive
                               ? "border-[#214cba] bg-[#F5F9FF]"
-                              : "border-[color:var(--navpro-border-soft)] bg-[color:var(--navpro-bg-muted)]"
+                              : "border-[color:var(--navpro-border-soft)] bg-[color:var(--navpro-bg-muted)]",
+                            !option.hosFeasible ? "opacity-90" : ""
                           ].join(" ")}
                         >
                           <div className="flex items-center justify-between gap-3">
@@ -2314,6 +2993,14 @@ export function DispatchWorkstation({
                               </div>
                             </div>
                             <div className="text-sm font-bold text-[#0E8A5B]">{formatMoney(option.roundTripProfitUsd)}</div>
+                          </div>
+                          <div className="mt-2 flex items-center gap-2">
+                            <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.06em] ${chip.tone}`}>
+                              {chip.label}
+                            </span>
+                            <span className="text-[10px] text-[color:var(--navpro-text-muted)]">
+                              needs {formatHours(option.hosRequiredMin)}
+                            </span>
                           </div>
                         </button>
                       );
@@ -2348,6 +3035,138 @@ export function DispatchWorkstation({
           ) : null}
         </section>
       </div>
+
+      {isCreateRouteModalOpen ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(16,32,51,0.45)] px-4 py-6"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Create new trip"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) {
+              setIsCreateRouteModalOpen(false);
+            }
+          }}
+        >
+          <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-[0_24px_70px_rgba(16,32,51,0.25)]">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-muted)]">
+                  Create trip in DB
+                </div>
+                <div className="mt-1 text-lg font-bold text-[color:var(--navpro-text-strong)]">New active trip</div>
+                <div className="mt-1 text-[12px] text-[color:var(--navpro-text-muted)]">
+                  Pairs a driver with a load and writes the trip to the active-trip mirror.
+                </div>
+              </div>
+              <button
+                type="button"
+                aria-label="Close create trip modal"
+                onClick={() => setIsCreateRouteModalOpen(false)}
+                className="rounded-lg border border-[color:var(--navpro-border-soft)] bg-white px-3 py-1.5 text-[16px] font-bold leading-none text-[color:var(--navpro-text-muted)]"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-3">
+              <label className="block">
+                <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-muted)]">
+                  Driver
+                </div>
+                <select
+                  value={routeCreateForm.driverId}
+                  onChange={(event) =>
+                    setRouteCreateForm((current) => ({
+                      ...current,
+                      driverId: event.target.value
+                    }))
+                  }
+                  className="w-full rounded-xl border border-[color:var(--navpro-border-soft)] bg-white px-3 py-2.5 text-[13px] text-[color:var(--navpro-text-strong)] outline-none"
+                >
+                  {(snapshot?.drivers ?? []).map((driver) => (
+                    <option key={driver.driverId} value={driver.driverId}>
+                      {driver.name} • #{driver.driverId}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="block">
+                <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-muted)]">
+                  Load
+                </div>
+                <select
+                  value={routeCreateForm.loadId}
+                  onChange={(event) =>
+                    setRouteCreateForm((current) => ({
+                      ...current,
+                      loadId: event.target.value
+                    }))
+                  }
+                  className="w-full rounded-xl border border-[color:var(--navpro-border-soft)] bg-white px-3 py-2.5 text-[13px] text-[color:var(--navpro-text-strong)] outline-none"
+                >
+                  {(snapshot?.pendingLoads ?? []).map((load) => (
+                    <option key={load.loadId} value={load.loadId}>
+                      {load.loadId} • {load.origin.city} to {load.destination.city}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="block">
+                <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-muted)]">
+                  Initial status
+                </div>
+                <select
+                  value={routeCreateForm.status}
+                  onChange={(event) =>
+                    setRouteCreateForm((current) => ({
+                      ...current,
+                      status: event.target.value as NonNullable<RouteDeskCreateRequest["status"]>
+                    }))
+                  }
+                  className="w-full rounded-xl border border-[color:var(--navpro-border-soft)] bg-white px-3 py-2.5 text-[13px] text-[color:var(--navpro-text-strong)] outline-none"
+                >
+                  {routeDeskStatusOptions.map((statusOption) => (
+                    <option key={statusOption.value} value={statusOption.value}>
+                      {statusOption.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            {selectedRouteLoad ? (
+              <div className="mt-4 rounded-xl border border-[color:var(--navpro-border-soft)] bg-[color:var(--navpro-bg-muted)] px-3 py-3 text-[12px] text-[color:var(--navpro-text-muted)]">
+                <div className="font-semibold text-[color:var(--navpro-text-strong)]">
+                  {selectedRouteLoad.origin.city}, {selectedRouteLoad.origin.state} to {selectedRouteLoad.destination.city}, {selectedRouteLoad.destination.state}
+                </div>
+                <div className="mt-1">{formatMoney(selectedRouteLoad.rateUsd)} • {selectedRouteLoad.customer ?? "Unassigned broker"}</div>
+                <div className="mt-1">Pickup window ends {formatDateTime(selectedRouteLoad.pickupEndMs)}</div>
+              </div>
+            ) : null}
+
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setIsCreateRouteModalOpen(false)}
+                className="rounded-xl border border-[color:var(--navpro-border-soft)] bg-white px-4 py-2.5 text-[12px] font-semibold text-[color:var(--navpro-text-muted)]"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleCreateRoute()}
+                disabled={isSavingRoute || !routeCreateForm.driverId || !routeCreateForm.loadId}
+                className="rounded-xl bg-[linear-gradient(135deg,#214cba_0%,#4066d4_100%)] px-4 py-2.5 text-[12px] font-bold text-white shadow-[0_4px_14px_rgba(33,76,186,0.25)] disabled:opacity-60"
+              >
+                {isSavingRoute ? "Creating..." : "Create trip"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </AppShell>
   );
 }

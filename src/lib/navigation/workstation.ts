@@ -4,6 +4,8 @@ export type WorkstationStage =
   | "backhaul_review"
   | "trip_monitoring";
 
+export type WorkstationDeskPanel = "drivers" | "routes";
+
 export type WorkstationStageMeta = {
   stage: WorkstationStage;
   label: string;
@@ -76,6 +78,16 @@ export function normalizeWorkstationStage(value?: string | string[] | null): Wor
   }
 }
 
+export function normalizeWorkstationDeskPanel(value?: string | string[] | null): WorkstationDeskPanel | null {
+  const panel = Array.isArray(value) ? value[0] : value;
+
+  if (panel === "drivers" || panel === "routes") {
+    return panel;
+  }
+
+  return null;
+}
+
 export function getWorkstationStageMeta(stage: WorkstationStage) {
   return workstationShellStages.find((entry) => entry.stage === stage) ?? workstationShellStages[0];
 }
@@ -92,11 +104,21 @@ export function isWorkstationStageActive(currentStage: WorkstationStage, targetS
   return getPrimaryWorkstationStage(currentStage) === getPrimaryWorkstationStage(targetStage);
 }
 
-export function buildWorkstationHref(stage: WorkstationStage, operatorMode = false) {
+export function buildWorkstationHref(
+  stage: WorkstationStage,
+  operatorMode = false,
+  panel?: WorkstationDeskPanel | null
+) {
   const params = new URLSearchParams();
 
   if (stage !== "morning_triage") {
     params.set("stage", stage);
+  }
+
+  if (panel === "routes") {
+    params.set("panel", "routes");
+  } else if (panel === "drivers" && stage === "morning_triage") {
+    params.set("panel", "drivers");
   }
 
   if (operatorMode) {

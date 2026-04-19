@@ -122,6 +122,22 @@ export const routeDeskCreateRequestSchema = z.object({
   status: tripStatusSchema.optional()
 });
 
+export const routeDeskUpdateRequestSchema = z
+  .object({
+    status: tripStatusSchema.optional(),
+    etaMs: z.number().int().positive().optional(),
+    currentLoc: coordinatesSchema.optional(),
+    driverId: z.number().int().positive().optional()
+  })
+  .refine(
+    (value) =>
+      value.status !== undefined ||
+      value.etaMs !== undefined ||
+      value.currentLoc !== undefined ||
+      value.driverId !== undefined,
+    { message: "Provide at least one field to update." }
+  );
+
 export const fleetSnapshotSchema = z.object({
   fetchedAtMs: z.number(),
   sourceMode: z.enum(["live", "synthetic"]),
@@ -209,6 +225,9 @@ export const backhaulOptionSchema = z.object({
   roundTripProfitUsd: z.number(),
   oneWayProfitUsd: z.number(),
   hosFeasible: z.boolean(),
+  hosRequiredMin: z.number(),
+  hosAvailableMin: z.number(),
+  hosBufferMin: z.number(),
   narrative: z.string()
 });
 

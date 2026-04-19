@@ -12,7 +12,7 @@ import { getDb } from "@/server/db/client";
 import { GET as getFleetSnapshotRoute } from "@/app/api/fleet/snapshot/route";
 import { POST as createAssignmentRoute } from "@/app/api/fleet/assignments/route";
 import { GET as getRoutesRoute, POST as createRouteDeskRoute } from "@/app/api/routes/route";
-import { DELETE as deleteRouteDeskRoute } from "@/app/api/routes/[tripId]/route";
+import { DELETE as deleteRouteDeskRoute, PATCH as patchRouteDeskRoute } from "@/app/api/routes/[tripId]/route";
 import { POST as simulateRoute } from "@/app/api/dev/simulate/route";
 import { GET as monitorFeedRoute } from "@/app/api/monitor/feed/route";
 import { POST as executeInterventionRoute } from "@/app/api/monitor/interventions/execute/route";
@@ -131,6 +131,71 @@ describe.sequential("backend routes", () => {
     expect(await getDb().activeTripMirror.findUnique({ where: { tripId: createdRoute.tripId } })).toBeNull();
   });
 
+  it("patches an existing route's status, ETA and current GPS via the route desk api", async () => {
+    const createResponse = await createRouteDeskRoute(
+      new Request("http://localhost/api/routes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          driverId: 101,
+          loadId: "TL-DEMO-01",
+          status: "on_track"
+        })
+      })
+    );
+    const created = routeDeskItemSchema.parse(await readJson<unknown>(createResponse));
+
+    const newEtaMs = created.etaMs + 90 * 60 * 1000;
+    const patchResponse = await patchRouteDeskRoute(
+      new Request(`http://localhost/api/routes/${created.tripId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          status: "eta_slip",
+          etaMs: newEtaMs,
+          currentLoc: { lat: 34.5, lng: -112.1 }
+        })
+      }),
+      { params: { tripId: created.tripId } }
+    );
+
+    const updated = routeDeskItemSchema.parse(await readJson<unknown>(patchResponse));
+
+    expect(updated.tripId).toBe(created.tripId);
+    expect(updated.status).toBe("eta_slip");
+    expect(updated.etaMs).toBe(newEtaMs);
+    expect(updated.currentLoc.lat).toBeCloseTo(34.5, 4);
+    expect(updated.currentLoc.lng).toBeCloseTo(-112.1, 4);
+
+    const persisted = await getDb().activeTripMirror.findUnique({ where: { tripId: created.tripId } });
+    expect(persisted?.status).toBe("eta_slip");
+    expect(Number(persisted?.etaMs)).toBe(newEtaMs);
+    expect(persisted?.currentLat).toBeCloseTo(34.5, 4);
+    expect(persisted?.currentLng).toBeCloseTo(-112.1, 4);
+  });
+
+  it("rejects empty PATCH bodies for the route desk api", async () => {
+    const createResponse = await createRouteDeskRoute(
+      new Request("http://localhost/api/routes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ driverId: 101, loadId: "TL-DEMO-01" })
+      })
+    );
+    const created = routeDeskItemSchema.parse(await readJson<unknown>(createResponse));
+
+    const patchResponse = await patchRouteDeskRoute(
+      new Request(`http://localhost/api/routes/${created.tripId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({})
+      }),
+      { params: { tripId: created.tripId } }
+    );
+
+    expect(patchResponse.status).toBeGreaterThanOrEqual(400);
+  });
+
   it("simulates an Act 3 breakdown and drafts one intervention", async () => {
     const simulateRequest = new Request("http://localhost/api/dev/simulate", {
       method: "POST",
@@ -147,19 +212,32 @@ describe.sequential("backend routes", () => {
     const db = getDb();
     const drafts = await db.interventionDraft.findMany();
 
-    expect(payload.interventionsCreated).toBe(1);
-    expect(drafts).toHaveLength(1);
+    // Baseline demo seed ships 2 non-on_track trips (TRIP-ACT3 long_idle
+    // and TRIP-ACT5 eta_slip), so the first monitoring tick after reset
+    // drafts an intervention for each. The simulate call above only
+    // layers a `breakdown` override onto TRIP-ACT3 — both drafts still
+    // show up because eta_slip is part of the baseline dataset.
+    expect(payload.interventionsCreated).toBe(2);
+    expect(drafts).toHaveLength(2);
+    const act3Draft = drafts.find((draft) => draft.tripId === "TRIP-ACT3");
+    expect(act3Draft).toBeDefined();
     expect(interventionDraftSchema.parse({
-      tripId: drafts[0]?.tripId,
-      trigger: drafts[0]?.trigger,
-      customerSms: drafts[0]?.customerSms,
-      relayDriverId: drafts[0]?.relayDriverId,
-      relayDriverName: drafts[0]?.relayDriverName,
-      relayDistanceMi: drafts[0]?.relayDistanceMi,
-      rerouteNeeded: drafts[0]?.rerouteNeeded,
-      voiceScript: drafts[0]?.voiceScript,
-      createdAtMs: drafts[0]?.createdAt.getTime()
+      tripId: act3Draft?.tripId,
+      trigger: act3Draft?.trigger,
+      customerSms: act3Draft?.customerSms,
+      relayDriverId: act3Draft?.relayDriverId,
+      relayDriverName: act3Draft?.relayDriverName,
+      relayDistanceMi: act3Draft?.relayDistanceMi,
+      rerouteNeeded: act3Draft?.rerouteNeeded,
+      voiceScript: act3Draft?.voiceScript,
+      createdAtMs: act3Draft?.createdAt.getTime()
     }).trigger).toBe("long_idle");
+    const act5Draft = drafts.find((draft) => draft.tripId === "TRIP-ACT5");
+    expect(act5Draft?.trigger).toBe("eta_slip");
+    // The two drafts must use distinct copy styles so the "AI voice
+    // variety" story stays visible in the UI.
+    expect(act3Draft?.customerSms).not.toEqual(act5Draft?.customerSms);
+    expect(act3Draft?.voiceScript).not.toEqual(act5Draft?.voiceScript);
   });
 
   it("surfaces monitoring feed rows and executes an intervention", async () => {
@@ -182,28 +260,33 @@ describe.sequential("backend routes", () => {
       metrics: { deadheadSavedMi: number };
     }>(feedResponse);
 
-    expect(feed.drafts).toHaveLength(1);
-    expect(feed.drafts[0]?.tripId).toBe("TRIP-ACT3");
+    // Feed includes both baseline alerts (TRIP-ACT3 + TRIP-ACT5). The
+    // voice + execute flow below is scoped to the TRIP-ACT3 breakdown
+    // draft specifically.
+    expect(feed.drafts).toHaveLength(2);
+    const act3Draft = feed.drafts.find((draft) => draft.tripId === "TRIP-ACT3");
+    expect(act3Draft).toBeDefined();
+    expect(feed.drafts.some((draft) => draft.tripId === "TRIP-ACT5")).toBe(true);
     expect(feed.decisionLog[0]?.actionType).toBe("intervention_drafted");
 
     const voiceRequest = new Request("http://localhost/api/voice/speak", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        draftId: feed.drafts[0]?.id,
+        draftId: act3Draft?.id,
         text: "Maria, truck 14 has stopped outside Barstow."
       })
     });
 
     const voiceResponse = await voiceSpeakRoute(voiceRequest);
     const audioSource = voiceResponse.headers.get("X-Audio-Source");
-    const draftAfterVoice = await getDb().interventionDraft.findUnique({ where: { id: feed.drafts[0]?.id } });
+    const draftAfterVoice = await getDb().interventionDraft.findUnique({ where: { id: act3Draft?.id } });
 
     const executeRequest = new Request("http://localhost/api/monitor/interventions/execute", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        draftId: feed.drafts[0]?.id,
+        draftId: act3Draft?.id,
         matchedCommand: "execute"
       })
     });

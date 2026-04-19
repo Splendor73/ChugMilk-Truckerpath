@@ -22,6 +22,10 @@ function toDraftView(row: Awaited<ReturnType<ReturnType<typeof createRepositorie
 
 export async function getMonitorFeed(): Promise<MonitorFeedResponse> {
   const repositories = createRepositories();
+  // Sweep duplicate open drafts up front so the feed the UI renders always
+  // has at most one open alert per trip, even if stale rows exist in the DB.
+  await repositories.interventionDrafts.pruneDuplicateOpenDrafts();
+
   const [drafts, decisionLog, metrics] = await Promise.all([
     repositories.interventionDrafts.listRecentOpen(),
     repositories.decisionLog.list(),

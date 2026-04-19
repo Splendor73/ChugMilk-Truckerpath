@@ -28,10 +28,14 @@ export function TopBar({
       <div className="grid items-center gap-4 lg:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]">
         <div>
           <div className="text-xs font-semibold uppercase tracking-[0.28em] text-[color:var(--color-shell-text-muted)]">
-            Dispatch Desk
+            co-dispach
           </div>
           <div className="mt-1 text-2xl font-semibold text-[color:var(--color-shell-text)]">
-            {workstationStageLabels[currentStage]}
+            {activeNavItem === "drivers"
+              ? "Drivers"
+              : activeNavItem === "routes"
+                ? "Routes"
+                : workstationStageLabels[currentStage]}
           </div>
           <div className="mt-1 text-sm text-[color:var(--color-shell-text-muted)]">{liveSummary}</div>
         </div>
