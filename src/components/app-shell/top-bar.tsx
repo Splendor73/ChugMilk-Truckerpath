@@ -28,7 +28,7 @@ export function TopBar({
       <div className="grid items-center gap-4 lg:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]">
         <div>
           <div className="text-xs font-semibold uppercase tracking-[0.28em] text-[color:var(--color-shell-text-muted)]">
-            co-dispach
+            co-dispatch
           </div>
           <div className="mt-1 text-2xl font-semibold text-[color:var(--color-shell-text)]">
             {activeNavItem === "drivers"

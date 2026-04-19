@@ -1,8 +1,8 @@
 {
-  "name": "co-dispach",
+  "name": "co-dispatch",
   "version": "0.1.0",
   "private": true,
-  "description": "Co-Dispach demo app for Trucker Path + ElevenLabs hackathon workflows.",
+  "description": "Co-Dispatch demo app for Trucker Path + ElevenLabs hackathon workflows.",
   "scripts": {
     "dev": "next dev",
     "build": "next build",

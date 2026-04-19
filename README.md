@@ -1,6 +1,6 @@
-# Co-Dispach
+# Co-Dispatch
 
-I built Co-Dispach as a dispatcher workstation demo for the Trucker Path + ElevenLabs hackathon, and I kept the scope pretty tight so the app would feel real in a live demo without turning into a giant half-finished TMS. The whole project is centered around four flows that dispatchers actually care about, which are morning triage, explainable load assignment, backhaul pairing, and proactive monitoring with a voice escalation path.
+I built Co-Dispatch as a dispatcher workstation demo for the Trucker Path + ElevenLabs hackathon, and I kept the scope pretty tight so the app would feel real in a live demo without turning into a giant half-finished TMS. The whole project is centered around four flows that dispatchers actually care about, which are morning triage, explainable load assignment, backhaul pairing, and proactive monitoring with a voice escalation path.
 
 The repo is a single Next.js 14 app with both the UI and the API routes inside it. Prisma is the database layer, Supabase is the production Postgres target, Mapbox handles the map, and the carrier side runs in synthetic NavPro mode by default so the demo still works even before live credentials are ready.
 
@@ -67,11 +67,11 @@ If the database-backed tests fail right away, the first thing I would check is `
 
 ## Deploy
 
-The intended production branch is `main`, the Vercel project slug is `co-dispach`, and the Supabase project name is `chugmilk`. I kept the infra names short, while the UI can still use the product-facing label.
+The intended production branch is `main`, the Vercel project slug is `co-dispatch`, and the Supabase project name is `chugmilk`. I kept the infra names short, while the UI can still use the product-facing label.
 
 1. Push the cleaned branch state to `main`.
 2. Create the Supabase project and copy the runtime plus direct Postgres URLs.
-3. Create or link the Vercel project as `co-dispach`.
+3. Create or link the Vercel project as `co-dispatch`.
 4. Add the required environment variables in Vercel.
 5. Run the Prisma migration against Supabase before the first production rollout.
 
