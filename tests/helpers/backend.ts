@@ -1,12 +1,20 @@
-import { execSync } from "node:child_process";
-
 import { resetServerEnvForTests } from "@/config/env.server";
 import { getDb } from "@/server/db/client";
 
-let bootstrapped = false;
-
 export function configureBackendTestEnv() {
-  process.env.DATABASE_URL = "file:./dev.db";
+  const runtimeDatabaseUrl = process.env.DATABASE_URL;
+  const testDatabaseUrl = process.env.TEST_DATABASE_URL;
+
+  if (!testDatabaseUrl) {
+    throw new Error("TEST_DATABASE_URL is required for database-backed tests.");
+  }
+
+  if (runtimeDatabaseUrl && runtimeDatabaseUrl === testDatabaseUrl) {
+    throw new Error("TEST_DATABASE_URL must not match DATABASE_URL.");
+  }
+
+  process.env.DATABASE_URL = testDatabaseUrl;
+  process.env.DIRECT_URL = process.env.DIRECT_URL || testDatabaseUrl;
   process.env.USE_SYNTHETIC_NAVPRO = "true";
   process.env.USE_NAVPRO_MOCK = "true";
   process.env.NAVPRO_CLIENT_ID = "";
@@ -19,13 +27,6 @@ export function configureBackendTestEnv() {
 
 export async function bootstrapBackendTests() {
   configureBackendTestEnv();
-  if (!bootstrapped) {
-    execSync("rm -f prisma/dev.db && npm run db:bootstrap", {
-      cwd: process.cwd(),
-      stdio: "ignore"
-    });
-    bootstrapped = true;
-  }
   await clearDatabase();
 }
 

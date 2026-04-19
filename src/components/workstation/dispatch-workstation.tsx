@@ -49,7 +49,7 @@ type DispatchConfirmation =
   | { mode: "outbound" }
   | { mode: "round_trip"; returnLoadId: string };
 
-const PANEL_WIDTH_STORAGE_KEY = "co-dispatch-panel-width";
+const PANEL_WIDTH_STORAGE_KEY = "co-dispach-panel-width";
 const DEFAULT_PANEL_WIDTH = 620;
 const DEFAULT_PANEL_RATIO = 1 / 3;
 const MIN_PANEL_WIDTH = 520;

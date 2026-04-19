@@ -1,7 +1,9 @@
 import { z } from "zod";
 
 const envSchema = z.object({
-  DATABASE_URL: z.string().default("file:./dev.db"),
+  DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
+  DIRECT_URL: z.string().min(1, "DIRECT_URL is required"),
+  TEST_DATABASE_URL: z.string().optional(),
   USE_SYNTHETIC_NAVPRO: z
     .string()
     .optional()
@@ -33,6 +35,21 @@ export function getServerEnv() {
 
 export function resetServerEnvForTests() {
   cachedEnv = null;
+}
+
+export function getTestDatabaseUrl() {
+  const env = getServerEnv();
+  const testDatabaseUrl = env.TEST_DATABASE_URL;
+
+  if (!testDatabaseUrl) {
+    throw new Error("TEST_DATABASE_URL is required for database-backed tests.");
+  }
+
+  if (testDatabaseUrl === env.DATABASE_URL) {
+    throw new Error("TEST_DATABASE_URL must not point at the same database as DATABASE_URL.");
+  }
+
+  return testDatabaseUrl;
 }
 
 export function requireLiveConfig(keys: Array<keyof ReturnType<typeof getServerEnv>>) {
