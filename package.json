@@ -1,0 +1,34 @@
+{
+  "name": "truckerpath-hack",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "test": "vitest run",
+    "test:unit": "vitest run --config vitest.config.ts",
+    "test:watch": "vitest",
+    "test:smoke": "npm run build && playwright test"
+  },
+  "dependencies": {
+    "next": "14.2.30",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "6.7.0",
+    "@testing-library/react": "16.2.0",
+    "@playwright/test": "1.51.1",
+    "@types/node": "22.13.10",
+    "@types/react": "18.3.18",
+    "@types/react-dom": "18.3.5",
+    "@vitejs/plugin-react": "4.3.4",
+    "autoprefixer": "10.4.20",
+    "jsdom": "26.1.0",
+    "postcss": "8.5.3",
+    "tailwindcss": "3.4.17",
+    "typescript": "5.7.3",
+    "vitest": "4.1.4"
+  }
+}
