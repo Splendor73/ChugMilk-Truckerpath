@@ -52,6 +52,37 @@ const snapshot: FleetSnapshotResponse = {
   }
 };
 
+const roundTripSnapshot: FleetSnapshotResponse = {
+  ...snapshot,
+  activeTrips: [
+    ...snapshot.activeTrips,
+    {
+      tripId: "trip-outbound-1",
+      driverId: 101,
+      loadId: "TL-DEMO-01",
+      currentLoc: { lat: 35.9132, lng: -120.1462 },
+      etaMs: 3,
+      status: "on_track",
+      plannedRoute: [
+        { lat: 33.4484, lng: -112.074 },
+        { lat: 37.7749, lng: -122.4194 }
+      ]
+    },
+    {
+      tripId: "return-1",
+      driverId: 101,
+      loadId: "TL-BH-01",
+      currentLoc: { lat: 36.1033, lng: -119.6816 },
+      etaMs: 4,
+      status: "on_track",
+      plannedRoute: [
+        { lat: 37.7749, lng: -122.4194 },
+        { lat: 33.4484, lng: -112.074 }
+      ]
+    }
+  ]
+};
+
 const parsedLoad = {
   loadId: "TL-DEMO-01",
   source: "paste" as const,
@@ -144,8 +175,46 @@ describe("map presentation", () => {
     });
 
     expect(model.routes.some((route) => route.id === "load-TL-DEMO-01")).toBe(true);
+    expect(model.routes.some((route) => route.id === "deadhead-driver-101-load-TL-DEMO-01" && route.dashed)).toBe(true);
     expect(model.markers.some((marker) => marker.id === "driver-101" && marker.emphasized)).toBe(true);
     expect(model.markers.some((marker) => marker.id === "load-origin-TL-DEMO-01")).toBe(true);
+  });
+
+  it("supports a hovered driver preview without replacing the current UI contract", () => {
+    const model = buildMapPresentationModel({
+      activeStage: "load_assignment",
+      snapshot,
+      activeTrip: snapshot.activeTrips[0] ?? null,
+      openDraft: null,
+      parsedLoad,
+      selectedScore,
+      hoveredDriverId: 105,
+      selectedBackhaul: null,
+      backhaulOpen: false,
+      driverById: new Map(snapshot.drivers.map((driver) => [driver.driverId, driver]))
+    });
+
+    expect(model.markers.find((marker) => marker.id === "driver-105")?.state).toBe("hovered");
+    expect(model.routes.some((route) => route.id === "deadhead-driver-105-load-TL-DEMO-01")).toBe(true);
+  });
+
+  it("keeps outbound and return overlays visible after a committed round-trip refresh", () => {
+    const model = buildMapPresentationModel({
+      activeStage: "trip_monitoring",
+      snapshot: roundTripSnapshot,
+      activeTrip: roundTripSnapshot.activeTrips[1] ?? null,
+      openDraft: null,
+      parsedLoad,
+      selectedScore,
+      selectedBackhaul,
+      backhaulOpen: false,
+      driverById: new Map(roundTripSnapshot.drivers.map((driver) => [driver.driverId, driver]))
+    });
+
+    expect(model.routes.some((route) => route.id === "load-TL-DEMO-01")).toBe(true);
+    expect(model.routes.some((route) => route.id === "backhaul-TL-BH-01")).toBe(true);
+    expect(model.markers.some((marker) => marker.id === "backhaul-origin-TL-BH-01")).toBe(true);
+    expect(model.viewport.zoom).toBeGreaterThanOrEqual(4);
   });
 
   it("shows relay context during monitoring", () => {

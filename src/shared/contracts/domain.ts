@@ -23,17 +23,46 @@ export interface DriverPerformanceSummary {
   scheduleTimeMin: number;
 }
 
+export type DriverOperationalStatus =
+  | "available"
+  | "driving"
+  | "resting"
+  | "maintenance"
+  | "unknown";
+
+export interface DriverMarket extends Coordinates {
+  city: string;
+  state: string;
+  label?: string;
+}
+
+export interface DriverTripSummary {
+  tripId: string;
+  loadId: string;
+  status: "on_track" | "route_deviation" | "long_idle" | "hos_risk" | "eta_slip";
+  origin: LoadStop | null;
+  destination: LoadStop | null;
+  etaMs: number | null;
+  routeContext: string;
+  remainingMiles: number | null;
+}
+
 export interface Driver {
   driverId: number;
   name: string;
   phone: string;
-  homeBase: Coordinates & { city: string };
+  homeBase: Coordinates & { city: string; state?: string };
   currentLocation: DriverLocation;
+  currentMarket?: DriverMarket;
   hosRemainingMin: number;
   hosStatus: HOSStatus;
+  operationalStatus?: DriverOperationalStatus;
   complianceFlags: ComplianceFlag[];
   performance?: DriverPerformanceSummary;
+  performanceScore?: number;
   activeTripId: string | null;
+  activeTrip?: DriverTripSummary | null;
+  recentTrips?: DriverTripSummary[];
 }
 
 export interface LoadStop extends Coordinates {
@@ -62,6 +91,10 @@ export interface ActiveTrip {
   etaMs: number;
   status: "on_track" | "route_deviation" | "long_idle" | "hos_risk" | "eta_slip";
   plannedRoute: Coordinates[];
+  origin?: LoadStop | null;
+  destination?: LoadStop | null;
+  routeContext?: string;
+  remainingMiles?: number | null;
 }
 
 export interface FleetSnapshot {

@@ -19,22 +19,46 @@ export const driverPerformanceSummarySchema = z.object({
   scheduleTimeMin: z.number()
 });
 
-export const driverSchema = z.object({
-  driverId: z.number(),
-  name: z.string(),
-  phone: z.string(),
-  homeBase: coordinatesSchema.extend({ city: z.string() }),
-  currentLocation: coordinatesSchema.extend({ updatedAtMs: z.number() }),
-  hosRemainingMin: z.number(),
-  hosStatus: z.enum(["fresh", "low", "must_rest"]),
-  complianceFlags: z.array(complianceFlagSchema),
-  performance: driverPerformanceSummarySchema.optional(),
-  activeTripId: z.string().nullable()
+const tripStatusSchema = z.enum(["on_track", "route_deviation", "long_idle", "hos_risk", "eta_slip"]);
+
+export const driverMarketSchema = coordinatesSchema.extend({
+  city: z.string(),
+  state: z.string(),
+  label: z.string().optional()
 });
 
 export const loadStopSchema = coordinatesSchema.extend({
   city: z.string(),
   state: z.string()
+});
+
+export const driverTripSummarySchema = z.object({
+  tripId: z.string(),
+  loadId: z.string(),
+  status: tripStatusSchema,
+  origin: loadStopSchema.nullable(),
+  destination: loadStopSchema.nullable(),
+  etaMs: z.number().nullable(),
+  routeContext: z.string(),
+  remainingMiles: z.number().nullable()
+});
+
+export const driverSchema = z.object({
+  driverId: z.number(),
+  name: z.string(),
+  phone: z.string(),
+  homeBase: coordinatesSchema.extend({ city: z.string(), state: z.string().optional() }),
+  currentLocation: coordinatesSchema.extend({ updatedAtMs: z.number() }),
+  currentMarket: driverMarketSchema.optional(),
+  hosRemainingMin: z.number(),
+  hosStatus: z.enum(["fresh", "low", "must_rest"]),
+  operationalStatus: z.enum(["available", "driving", "resting", "maintenance", "unknown"]).optional(),
+  complianceFlags: z.array(complianceFlagSchema),
+  performance: driverPerformanceSummarySchema.optional(),
+  performanceScore: z.number().optional(),
+  activeTripId: z.string().nullable(),
+  activeTrip: driverTripSummarySchema.nullable().optional(),
+  recentTrips: z.array(driverTripSummarySchema).optional()
 });
 
 export const loadSchema = z.object({
@@ -56,8 +80,12 @@ export const activeTripSchema = z.object({
   loadId: z.string(),
   currentLoc: coordinatesSchema,
   etaMs: z.number(),
-  status: z.enum(["on_track", "route_deviation", "long_idle", "hos_risk", "eta_slip"]),
-  plannedRoute: z.array(coordinatesSchema)
+  status: tripStatusSchema,
+  plannedRoute: z.array(coordinatesSchema),
+  origin: loadStopSchema.nullable().optional(),
+  destination: loadStopSchema.nullable().optional(),
+  routeContext: z.string().optional(),
+  remainingMiles: z.number().nullable().optional()
 });
 
 export const fleetSnapshotSchema = z.object({

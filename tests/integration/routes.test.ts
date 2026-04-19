@@ -31,6 +31,8 @@ describe.sequential("backend routes", () => {
     const response = await getFleetSnapshotRoute();
     const payload = await readJson<unknown>(response);
     const snapshot = fleetSnapshotSchema.parse(payload);
+    const mike = snapshot.drivers.find((driver) => driver.driverId === 101);
+    const samTrip = snapshot.activeTrips.find((trip) => trip.tripId === "TRIP-ACT3");
 
     expect(snapshot.drivers.length).toBeGreaterThanOrEqual(15);
     expect(snapshot.pendingLoads.length).toBeGreaterThan(0);
@@ -38,6 +40,13 @@ describe.sequential("backend routes", () => {
     expect(snapshot.morningBrief.restSoonCount).toBe(3);
     expect(snapshot.morningBrief.complianceFlagCount).toBe(2);
     expect(snapshot.morningBrief.inMaintenanceCount).toBe(1);
+    expect(mike?.currentMarket).toMatchObject({ city: "Phoenix", state: "AZ" });
+    expect(mike?.operationalStatus).toBe("available");
+    expect(mike?.performanceScore).toBeGreaterThan(90);
+    expect(mike?.recentTrips).toEqual([]);
+    expect(samTrip?.destination).toMatchObject({ city: "Phoenix", state: "AZ" });
+    expect(samTrip?.routeContext).toContain("Los Angeles");
+    expect(samTrip?.remainingMiles).toBeGreaterThan(150);
   });
 
   it("creates a round-trip assignment and persists audit rows", async () => {

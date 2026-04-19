@@ -33,6 +33,10 @@ type DispatchWorkstationProps = {
 };
 
 type AgentFinalPayload = Extract<AgentStreamEvent, { type: "final" }>["payload"];
+type DriverDeskFilter = "all" | "ready" | "active" | "rest" | "flagged";
+type DispatchConfirmation =
+  | { mode: "outbound" }
+  | { mode: "round_trip"; returnLoadId: string };
 
 const DEMO_LOAD_TEXT =
   "Phoenix to San Francisco dry van load. Pickup tomorrow 8am. Rate $3,200. Weight 38,000 lbs.";
@@ -99,6 +103,70 @@ function driverStatusTone(driver: Driver) {
     return "bg-[#FFF3D7] text-[#996B00]";
   }
   return "bg-[#E7F0FF] text-[color:var(--navpro-text-primary)]";
+}
+
+function getDriverDeskStatus(driver: Driver) {
+  if (driver.hosStatus === "must_rest") {
+    return {
+      label: "Rest now",
+      detail: `Reset in ${formatHours(driver.hosRemainingMin)}`,
+      tone: "bg-[#FCE8E8] text-[#A33939]"
+    };
+  }
+
+  if (driver.activeTripId) {
+    return {
+      label: "In transit",
+      detail: `Trip ${driver.activeTripId}`,
+      tone: "bg-[#E7F0FF] text-[#214CBA]"
+    };
+  }
+
+  if (driver.complianceFlags.length > 0) {
+    return {
+      label: "Flagged",
+      detail: `${driver.complianceFlags.length} compliance item${driver.complianceFlags.length === 1 ? "" : "s"}`,
+      tone: "bg-[#FFF3D7] text-[#996B00]"
+    };
+  }
+
+  if (driver.hosStatus === "low") {
+    return {
+      label: "Tight HOS",
+      detail: `${formatHours(driver.hosRemainingMin)} left`,
+      tone: "bg-[#FFF3D7] text-[#996B00]"
+    };
+  }
+
+  return {
+    label: "Ready",
+    detail: `${formatHours(driver.hosRemainingMin)} left`,
+    tone: "bg-[#E6F6EE] text-[#0E8A5B]"
+  };
+}
+
+function matchesDriverDeskFilter(driver: Driver, filter: DriverDeskFilter) {
+  switch (filter) {
+    case "ready":
+      return driver.hosStatus === "fresh" && !driver.activeTripId;
+    case "active":
+      return Boolean(driver.activeTripId);
+    case "rest":
+      return driver.hosStatus === "must_rest" || driver.hosStatus === "low";
+    case "flagged":
+      return driver.complianceFlags.length > 0;
+    default:
+      return true;
+  }
+}
+
+function formatPerformanceDelta(actual: number, scheduled: number) {
+  const delta = actual - scheduled;
+  if (delta === 0) {
+    return "On plan";
+  }
+
+  return `${delta > 0 ? "+" : ""}${formatNumber(delta)} mi`;
 }
 
 async function readAgentStream(request: string) {
@@ -410,6 +478,14 @@ const headerNavItems: Array<{
 
 type CandidateMetricKey = "deadhead" | "hos" | "fuel" | "eta" | "ripple";
 
+const driverDeskFilters: Array<{ key: DriverDeskFilter; label: string }> = [
+  { key: "all", label: "All" },
+  { key: "ready", label: "Ready" },
+  { key: "active", label: "Active" },
+  { key: "rest", label: "Rest" },
+  { key: "flagged", label: "Flagged" }
+];
+
 export function DispatchWorkstation({
   initialStage = "morning_triage",
   initialOperatorMode = false
@@ -427,12 +503,15 @@ export function DispatchWorkstation({
   const [parsedLoad, setParsedLoad] = useState<Load | null>(null);
   const [scores, setScores] = useState<DriverScore[]>([]);
   const [backhauls, setBackhauls] = useState<BackhaulOption[]>([]);
+  const [backhaulDriverId, setBackhaulDriverId] = useState<number | null>(null);
   const [selectedDriverId, setSelectedDriverId] = useState<number | null>(null);
+  const [selectedDeskDriverId, setSelectedDeskDriverId] = useState<number | null>(null);
   const [selectedReturnLoadId, setSelectedReturnLoadId] = useState<string | null>(null);
   const [advancedShowcase, setAdvancedShowcase] = useState<DemoAdvancedRankingResponse | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isDispatching, setIsDispatching] = useState(false);
+  const [isOpeningBackhaul, setIsOpeningBackhaul] = useState(false);
   const [isTriggeringMonitor, setIsTriggeringMonitor] = useState(false);
   const [isExecuting, setIsExecuting] = useState(false);
   const [isLoadingAdvancedShowcase, setIsLoadingAdvancedShowcase] = useState(false);
@@ -442,6 +521,13 @@ export function DispatchWorkstation({
   const [advancedShowcaseError, setAdvancedShowcaseError] = useState<string | null>(null);
   const [isOperatorRunning, setIsOperatorRunning] = useState(false);
   const [selectedMetricKey, setSelectedMetricKey] = useState<CandidateMetricKey>("deadhead");
+  const [driverSearch, setDriverSearch] = useState("");
+  const [driverDeskFilter, setDriverDeskFilter] = useState<DriverDeskFilter>("all");
+  const [pendingDispatchConfirmation, setPendingDispatchConfirmation] = useState<DispatchConfirmation | null>(null);
+  const [dismissedDraftIds, setDismissedDraftIds] = useState<string[]>([]);
+  const [draftOverrides, setDraftOverrides] = useState<Record<string, { voiceScript: string; customerSms: string }>>({});
+  const [isEditingDraft, setIsEditingDraft] = useState(false);
+  const [draftEditor, setDraftEditor] = useState({ voiceScript: "", customerSms: "" });
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const mapRef = useRef<DispatchMapHandle | null>(null);
   const panelResizeStartRef = useRef<{ x: number; width: number } | null>(null);
@@ -568,7 +654,6 @@ export function DispatchWorkstation({
     void handleLoadAdvancedShowcase();
   }, [activeStage, advancedShowcase, isLoadingAdvancedShowcase]);
 
-  const openDraft = monitorFeed?.drafts[0] ?? null;
   const selectedScore =
     scores.find((score) => score.driverId === selectedDriverId) ??
     scores.find((score) => !score.eliminated) ??
@@ -581,15 +666,54 @@ export function DispatchWorkstation({
     return new Map((snapshot?.drivers ?? []).map((driver) => [driver.driverId, driver]));
   }, [snapshot]);
 
+  const driverDeskRows = useMemo(() => {
+    const query = driverSearch.trim().toLowerCase();
+
+    return (snapshot?.drivers ?? []).filter((driver) => {
+      if (!matchesDriverDeskFilter(driver, driverDeskFilter)) {
+        return false;
+      }
+
+      if (!query) {
+        return true;
+      }
+
+      const haystack = `${driver.name} ${driver.driverId} ${driver.homeBase.city} ${driver.phone}`.toLowerCase();
+      return haystack.includes(query);
+    });
+  }, [driverDeskFilter, driverSearch, snapshot]);
+
+  const selectedDeskDriver =
+    driverDeskRows.find((driver) => driver.driverId === selectedDeskDriverId) ??
+    driverById.get(selectedDeskDriverId ?? -1) ??
+    driverDeskRows[0] ??
+    snapshot?.drivers[0] ??
+    null;
+
+  const visibleDrafts = useMemo(() => {
+    return (monitorFeed?.drafts ?? [])
+      .filter((draft) => !dismissedDraftIds.includes(draft.id))
+      .map((draft) => {
+        const override = draftOverrides[draft.id];
+        return override
+          ? {
+              ...draft,
+              voiceScript: override.voiceScript,
+              customerSms: override.customerSms
+            }
+          : draft;
+      });
+  }, [dismissedDraftIds, draftOverrides, monitorFeed]);
+
   const activeTrip = useMemo(() => {
     if (!snapshot) {
       return null;
     }
-    if (openDraft) {
-      return snapshot.activeTrips.find((trip) => trip.tripId === openDraft.tripId) ?? null;
+    if (visibleDrafts[0]) {
+      return snapshot.activeTrips.find((trip) => trip.tripId === visibleDrafts[0].tripId) ?? null;
     }
     return snapshot.activeTrips.find((trip) => trip.status !== "on_track") ?? snapshot.activeTrips[0] ?? null;
-  }, [openDraft, snapshot]);
+  }, [snapshot, visibleDrafts]);
 
   const readyDrivers = (snapshot?.drivers ?? [])
     .filter((driver) => driver.hosStatus === "fresh" && !driver.activeTripId)
@@ -609,10 +733,37 @@ export function DispatchWorkstation({
     .slice(0, 4);
 
   const monitoringRows = monitorFeed?.decisionLog.slice(0, 6) ?? [];
+  const openDraft = visibleDrafts[0] ?? null;
+
+  useEffect(() => {
+    if (driverDeskRows.length === 0) {
+      if (selectedDeskDriverId !== null) {
+        setSelectedDeskDriverId(null);
+      }
+      return;
+    }
+
+    if (!selectedDeskDriverId || !driverDeskRows.some((driver) => driver.driverId === selectedDeskDriverId)) {
+      setSelectedDeskDriverId(driverDeskRows[0].driverId);
+    }
+  }, [driverDeskRows, selectedDeskDriverId]);
+
+  useEffect(() => {
+    if (!openDraft || isEditingDraft) {
+      return;
+    }
+
+    const override = draftOverrides[openDraft.id];
+    setDraftEditor({
+      voiceScript: override?.voiceScript ?? openDraft.voiceScript,
+      customerSms: override?.customerSms ?? openDraft.customerSms
+    });
+  }, [draftOverrides, isEditingDraft, openDraft]);
 
   async function handleAnalyzeLoad() {
     setIsAnalyzing(true);
     setAssignmentFeedback(null);
+    setPendingDispatchConfirmation(null);
     try {
       const result = await readAgentStream(pasteInput);
       setCopilotSummary(result.finalPayload?.text ?? result.summary);
@@ -622,6 +773,7 @@ export function DispatchWorkstation({
       const topScore =
         result.finalPayload?.scores?.find((score) => !score.eliminated) ?? result.finalPayload?.scores?.[0] ?? null;
       setSelectedDriverId(topScore?.driverId ?? null);
+      setBackhaulDriverId(topScore?.driverId ?? null);
       const topBackhaul = result.finalPayload?.backhauls?.[0] ?? null;
       setSelectedReturnLoadId(topBackhaul?.returnLoad.loadId ?? null);
       setActiveStage("load_assignment");
@@ -637,22 +789,32 @@ export function DispatchWorkstation({
       return;
     }
 
-    if (backhauls.length === 0) {
-      const response = await fetch("/api/agent/backhaul", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          outboundLoadId: parsedLoad.loadId,
-          driverId: selectedScore.driverId
-        })
-      });
-      const payload = (await response.json()) as BackhaulOption[];
-      setBackhauls(payload);
-      setSelectedReturnLoadId(payload[0]?.returnLoad.loadId ?? null);
-    }
+    setIsOpeningBackhaul(true);
+    setPendingDispatchConfirmation(null);
+    try {
+      if (backhauls.length === 0 || backhaulDriverId !== selectedScore.driverId) {
+        const response = await fetch("/api/agent/backhaul", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            outboundLoadId: parsedLoad.loadId,
+            driverId: selectedScore.driverId
+          })
+        });
+        const payload = (await response.json()) as BackhaulOption[];
+        setBackhauls(payload);
+        setBackhaulDriverId(selectedScore.driverId);
+        setSelectedReturnLoadId(payload[0]?.returnLoad.loadId ?? null);
+      }
 
-    setBackhaulOpen(true);
-    setActiveStage("backhaul_review");
+      setBackhaulOpen(true);
+      setActiveStage("backhaul_review");
+      setAssignmentFeedback(`Backhaul review ready for ${selectedScore.driverName}. Confirm the pairing before assigning.`);
+    } catch (error) {
+      setAssignmentFeedback(error instanceof Error ? error.message : "Backhaul lookup failed.");
+    } finally {
+      setIsOpeningBackhaul(false);
+    }
   }
 
   async function handleDispatch(returnLoadId?: string) {
@@ -677,6 +839,7 @@ export function DispatchWorkstation({
           ? `Round trip dispatched. Outbound ${payload.tripId}${payload.returnTripId ? ` and return ${payload.returnTripId}` : ""}.`
           : `Outbound trip ${payload.tripId} dispatched.`
       );
+      setPendingDispatchConfirmation(null);
       setBackhaulOpen(false);
       setActiveStage("trip_monitoring");
       await refreshAll(true);
@@ -685,6 +848,30 @@ export function DispatchWorkstation({
     } finally {
       setIsDispatching(false);
     }
+  }
+
+  function queueDispatchConfirmation(mode: DispatchConfirmation["mode"], returnLoadId?: string) {
+    if (mode === "round_trip") {
+      const resolvedReturnLoadId = returnLoadId ?? selectedBackhaul?.returnLoad.loadId;
+      if (!resolvedReturnLoadId) {
+        return;
+      }
+
+      setPendingDispatchConfirmation({ mode, returnLoadId: resolvedReturnLoadId });
+      return;
+    }
+
+    setPendingDispatchConfirmation({ mode });
+  }
+
+  async function handleConfirmDispatch() {
+    if (!pendingDispatchConfirmation) {
+      return;
+    }
+
+    await handleDispatch(
+      pendingDispatchConfirmation.mode === "round_trip" ? pendingDispatchConfirmation.returnLoadId : undefined
+    );
   }
 
   async function handleTriggerMonitoring() {
@@ -762,6 +949,40 @@ export function DispatchWorkstation({
     }
   }
 
+  function handleStartDraftEdit() {
+    if (!openDraft) {
+      return;
+    }
+
+    setDraftEditor({
+      voiceScript: openDraft.voiceScript,
+      customerSms: openDraft.customerSms
+    });
+    setIsEditingDraft(true);
+  }
+
+  function handleSaveDraftEdit() {
+    if (!openDraft) {
+      return;
+    }
+
+    setDraftOverrides((current) => ({
+      ...current,
+      [openDraft.id]: {
+        voiceScript: draftEditor.voiceScript.trim() || openDraft.voiceScript,
+        customerSms: draftEditor.customerSms.trim() || openDraft.customerSms
+      }
+    }));
+    setIsEditingDraft(false);
+    setAssignmentFeedback("Draft edits saved in the workstation preview.");
+  }
+
+  function handleDismissDraft(draftId: string) {
+    setDismissedDraftIds((current) => (current.includes(draftId) ? current : [...current, draftId]));
+    setIsEditingDraft(false);
+    setAssignmentFeedback("Alert dismissed from the desk. Refresh the feed to bring it back.");
+  }
+
   async function runOperatorAction(body: Record<string, unknown>, nextStage?: WorkstationStage) {
     setIsOperatorRunning(true);
     try {
@@ -775,10 +996,16 @@ export function DispatchWorkstation({
         setParsedLoad(null);
         setScores([]);
         setBackhauls([]);
+        setBackhaulDriverId(null);
         setSelectedDriverId(null);
+        setSelectedDeskDriverId(null);
         setSelectedReturnLoadId(null);
         setBackhaulOpen(false);
         setAdvancedShowcase(null);
+        setPendingDispatchConfirmation(null);
+        setDismissedDraftIds([]);
+        setDraftOverrides({});
+        setIsEditingDraft(false);
       }
 
       if (nextStage) {
@@ -827,32 +1054,38 @@ export function DispatchWorkstation({
     : "No open intervention drafts";
 
   const topCandidate = scores.find((score) => !score.eliminated) ?? null;
-  const secondaryCandidates = scores.filter((score) => score.driverId !== topCandidate?.driverId).slice(0, 3);
-  const selectedMetricExplanation = topCandidate
+  const selectedCandidate = selectedScore ?? topCandidate;
+  const selectedCandidateRank = selectedCandidate
+    ? scores.findIndex((score) => score.driverId === selectedCandidate.driverId) + 1
+    : null;
+  const alternateCandidates = scores
+    .filter((score) => score.driverId !== selectedCandidate?.driverId && !score.eliminated)
+    .slice(0, 4);
+  const selectedMetricExplanation = selectedCandidate
     ? {
         deadhead: {
           label: "Deadhead",
-          value: `${topCandidate.deadheadMiles} mi`,
+          value: `${selectedCandidate.deadheadMiles} mi`,
           detail: "Current GPS-to-pickup distance. Lower deadhead reduces empty cost before the revenue leg starts."
         },
         hos: {
           label: "HOS",
-          value: `${formatHours(topCandidate.hosCheck.availableMin)} available vs ${formatHours(topCandidate.hosCheck.requiredMin)} needed`,
-          detail: `This leaves ${formatHours(Math.max(topCandidate.hosCheck.availableMin - topCandidate.hosCheck.requiredMin, 0))} of legal drive-time cushion after the lane.`
+          value: `${formatHours(selectedCandidate.hosCheck.availableMin)} available vs ${formatHours(selectedCandidate.hosCheck.requiredMin)} needed`,
+          detail: `This leaves ${formatHours(Math.max(selectedCandidate.hosCheck.availableMin - selectedCandidate.hosCheck.requiredMin, 0))} of legal drive-time cushion after the lane.`
         },
         fuel: {
           label: "Fuel",
-          value: formatMoney(topCandidate.fuelCostUsd),
+          value: formatMoney(selectedCandidate.fuelCostUsd),
           detail: "Estimated fuel spend for deadhead plus loaded miles using the backend route-cost model."
         },
         eta: {
           label: "ETA confidence",
-          value: formatPercent(topCandidate.etaConfidence),
+          value: formatPercent(selectedCandidate.etaConfidence),
           detail: "Confidence blends deadhead, pickup buffer, and route exposure. Higher is safer against missed pickup."
         },
         ripple: {
           label: "Ripple impact",
-          value: `${topCandidate.rippleImpact.affectedLoads} nearby loads • ${formatMoney(topCandidate.rippleImpact.deltaUsd)}`,
+          value: `${selectedCandidate.rippleImpact.affectedLoads} nearby loads • ${formatMoney(selectedCandidate.rippleImpact.deltaUsd)}`,
           detail: "Opportunity cost of pulling this driver away from nearby freight already in the network."
         }
       }[selectedMetricKey]
@@ -944,9 +1177,7 @@ export function DispatchWorkstation({
           <div className="sticky top-0 z-10 border-b border-[color:var(--navpro-border-soft)] bg-white/95 px-6 pb-4 pt-6 backdrop-blur-sm">
             <div className="mb-2 flex items-center justify-between gap-3">
               <div>
-                <div className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[color:var(--navpro-text-subtle)]">
-                  Co-Dispatch Intelligence Layer
-                </div>
+                <div className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[color:var(--navpro-text-subtle)]">Dispatch desk</div>
                 <div className="mt-1 text-[26px] font-bold tracking-tight text-[color:var(--navpro-text-strong)]">
                   {workstationStageLabels[activeStage]}
                 </div>
@@ -1001,7 +1232,7 @@ export function DispatchWorkstation({
                 <section className="rounded-xl border border-[color:var(--navpro-border-soft)] bg-[color:var(--navpro-bg-muted)] p-5">
                   <div className="mb-3 flex items-center gap-2 text-[12px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-muted)]">
                     <Glyph name="spark" className="h-4 w-4 text-[#214cba]" />
-                    AI synthesis brief
+                    Fleet brief
                   </div>
                   <div className="rounded-xl bg-white px-4 py-4 shadow-[0_4px_12px_rgba(21,27,41,0.03)]">
                     <div className="text-[15px] font-semibold leading-6 text-[color:var(--navpro-text-strong)]">
@@ -1031,7 +1262,7 @@ export function DispatchWorkstation({
                 <section className="space-y-3">
                   <div className="flex items-center justify-between">
                     <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-muted)]">
-                      Priority action required
+                      Priority queue
                     </div>
                     <div className="rounded-full bg-[#FFE5E2] px-3 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-[#BA1A1A]">
                       {complianceItems.length + restRiskDrivers.length} flags
@@ -1080,12 +1311,181 @@ export function DispatchWorkstation({
                   ))}
                 </section>
 
+                <section className="rounded-xl border border-[color:var(--navpro-border-soft)] bg-white p-5">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-muted)]">
+                        Driver desk
+                      </div>
+                      <div className="mt-1 text-sm font-bold text-[color:var(--navpro-text-strong)]">
+                        Search the live roster and inspect the selected seat before dispatch.
+                      </div>
+                    </div>
+                    <div className="rounded-full bg-[color:var(--navpro-bg-muted)] px-3 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-[color:var(--navpro-text-muted)]">
+                      {driverDeskRows.length} shown
+                    </div>
+                  </div>
+
+                  <div className="mt-4 rounded-xl border border-[color:var(--navpro-border-soft)] bg-[color:var(--navpro-bg-input)] px-3 py-3">
+                    <div className="flex items-center gap-2 text-[color:var(--navpro-text-muted)]">
+                      <Glyph name="search" className="h-4 w-4" />
+                      <input
+                        value={driverSearch}
+                        onChange={(event) => setDriverSearch(event.target.value)}
+                        placeholder="Search driver, unit, city, or phone"
+                        aria-label="Search drivers"
+                        className="w-full bg-transparent text-[13px] outline-none placeholder:text-[color:var(--navpro-text-subtle)]"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {driverDeskFilters.map((filter) => {
+                      const count =
+                        filter.key === "all"
+                          ? snapshot?.drivers.length ?? 0
+                          : (snapshot?.drivers ?? []).filter((driver) => matchesDriverDeskFilter(driver, filter.key)).length;
+                      const isActive = driverDeskFilter === filter.key;
+
+                      return (
+                        <button
+                          key={filter.key}
+                          type="button"
+                          onClick={() => setDriverDeskFilter(filter.key)}
+                          className={[
+                            "rounded-full border px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.08em]",
+                            isActive
+                              ? "border-[#214cba] bg-[#E7F0FF] text-[#214cba]"
+                              : "border-[color:var(--navpro-border-soft)] bg-white text-[color:var(--navpro-text-muted)]"
+                          ].join(" ")}
+                        >
+                          {filter.label} {count}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {selectedDeskDriver ? (
+                    <div className="mt-4 rounded-xl border border-[#c7d7ff] bg-[#f7faff] p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex items-center gap-3">
+                          <Avatar name={selectedDeskDriver.name} tone="blue" />
+                          <div>
+                            <div className="text-base font-bold text-[color:var(--navpro-text-strong)]">{selectedDeskDriver.name}</div>
+                            <div className="mt-1 text-xs text-[color:var(--navpro-text-muted)]">
+                              Unit #{selectedDeskDriver.driverId} • {selectedDeskDriver.homeBase.city} • {selectedDeskDriver.phone}
+                            </div>
+                          </div>
+                        </div>
+                        <div className={`rounded-full px-2 py-1 text-[10px] font-bold uppercase tracking-[0.08em] ${getDriverDeskStatus(selectedDeskDriver).tone}`}>
+                          {getDriverDeskStatus(selectedDeskDriver).label}
+                        </div>
+                      </div>
+
+                      <div className="mt-3 grid grid-cols-2 gap-2 text-[12px] xl:grid-cols-4">
+                        <div className="rounded-lg bg-white px-3 py-3">
+                          <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-subtle)]">HOS</div>
+                          <div className="mt-1 text-sm font-bold text-[color:var(--navpro-text-strong)]">{formatHours(selectedDeskDriver.hosRemainingMin)}</div>
+                          <div className="mt-1 text-[11px] text-[color:var(--navpro-text-muted)]">{getDriverDeskStatus(selectedDeskDriver).detail}</div>
+                        </div>
+                        <div className="rounded-lg bg-white px-3 py-3">
+                          <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-subtle)]">GPS ping</div>
+                          <div className="mt-1 text-sm font-bold text-[color:var(--navpro-text-strong)]">{formatTime(selectedDeskDriver.currentLocation.updatedAtMs)}</div>
+                          <div className="mt-1 text-[11px] text-[color:var(--navpro-text-muted)]">
+                            {selectedDeskDriver.currentLocation.lat.toFixed(2)}, {selectedDeskDriver.currentLocation.lng.toFixed(2)}
+                          </div>
+                        </div>
+                        <div className="rounded-lg bg-white px-3 py-3">
+                          <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-subtle)]">Trip</div>
+                          <div className="mt-1 text-sm font-bold text-[color:var(--navpro-text-strong)]">{selectedDeskDriver.activeTripId ?? "Available"}</div>
+                          <div className="mt-1 text-[11px] text-[color:var(--navpro-text-muted)]">
+                            {selectedDeskDriver.complianceFlags.length} flag{selectedDeskDriver.complianceFlags.length === 1 ? "" : "s"}
+                          </div>
+                        </div>
+                        <div className="rounded-lg bg-white px-3 py-3">
+                          <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-subtle)]">Miles delta</div>
+                          <div className="mt-1 text-sm font-bold text-[color:var(--navpro-text-strong)]">
+                            {selectedDeskDriver.performance
+                              ? formatPerformanceDelta(selectedDeskDriver.performance.actualMiles, selectedDeskDriver.performance.scheduleMiles)
+                              : "No trip history"}
+                          </div>
+                          <div className="mt-1 text-[11px] text-[color:var(--navpro-text-muted)]">
+                            {selectedDeskDriver.performance
+                              ? `${formatNumber(selectedDeskDriver.performance.actualMiles)} actual • ${formatNumber(selectedDeskDriver.performance.scheduleMiles)} planned`
+                              : "Performance feed not loaded"}
+                          </div>
+                        </div>
+                      </div>
+
+                      {selectedDeskDriver.complianceFlags.length > 0 ? (
+                        <div className="mt-3 space-y-2">
+                          {selectedDeskDriver.complianceFlags.map((flag) => (
+                            <div key={`${selectedDeskDriver.driverId}-${flag.kind}`} className="rounded-lg bg-[#fff5f4] px-3 py-3 text-[12px] text-[#7d3a32]">
+                              <span className="font-bold">{flag.kind.replace(/_/g, " ")}:</span> {flag.message}
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <div className="mt-4 rounded-xl border border-dashed border-[color:var(--navpro-border-soft)] px-4 py-5 text-[12px] text-[color:var(--navpro-text-muted)]">
+                      No drivers match the current search and filter.
+                    </div>
+                  )}
+
+                  <div className="mt-4 space-y-2">
+                    {driverDeskRows.slice(0, 6).map((driver) => {
+                      const status = getDriverDeskStatus(driver);
+                      const isActive = selectedDeskDriver?.driverId === driver.driverId;
+                      return (
+                        <button
+                          key={driver.driverId}
+                          type="button"
+                          onClick={() => setSelectedDeskDriverId(driver.driverId)}
+                          className={[
+                            "w-full rounded-xl border p-4 text-left transition-colors",
+                            isActive
+                              ? "border-[#214cba] bg-[#f7faff]"
+                              : "border-[color:var(--navpro-border-soft)] bg-[color:var(--navpro-bg-muted)] hover:bg-white"
+                          ].join(" ")}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="flex items-center gap-3">
+                              <Avatar name={driver.name} tone={driver.activeTripId ? "teal" : "violet"} />
+                              <div>
+                                <div className="text-sm font-bold text-[color:var(--navpro-text-strong)]">{driver.name}</div>
+                                <div className="mt-1 text-xs text-[color:var(--navpro-text-muted)]">
+                                  Unit #{driver.driverId} • {driver.homeBase.city} • GPS {formatTime(driver.currentLocation.updatedAtMs)}
+                                </div>
+                              </div>
+                            </div>
+                            <div className={`rounded-full px-2 py-1 text-[10px] font-bold uppercase tracking-[0.08em] ${status.tone}`}>
+                              {status.label}
+                            </div>
+                          </div>
+                          <div className="mt-3 grid grid-cols-3 gap-2 text-[11px]">
+                            <div className="rounded-lg bg-white px-3 py-2 text-[color:var(--navpro-text-muted)]">
+                              <span className="font-semibold text-[color:var(--navpro-text-strong)]">HOS</span> {formatHours(driver.hosRemainingMin)}
+                            </div>
+                            <div className="rounded-lg bg-white px-3 py-2 text-[color:var(--navpro-text-muted)]">
+                              <span className="font-semibold text-[color:var(--navpro-text-strong)]">Flags</span> {driver.complianceFlags.length}
+                            </div>
+                            <div className="rounded-lg bg-white px-3 py-2 text-[color:var(--navpro-text-muted)]">
+                              <span className="font-semibold text-[color:var(--navpro-text-strong)]">Seat</span> {driver.activeTripId ? "Assigned" : "Open"}
+                            </div>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </section>
+
                 <section className="rounded-xl border border-[color:var(--navpro-border-soft)] bg-[color:var(--navpro-bg-muted)] p-4">
                   <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-muted)]">
-                    Morning handoff
+                    Next step
                   </div>
                   <div className="mt-2 text-[13px] leading-6 text-[color:var(--navpro-text-muted)]">
-                    Sync the fleet snapshot, confirm the flagged drivers, and move into dispatch for the active lane.
+                    Refresh the board, clear the driver issues, then open the active lane.
                   </div>
                   <div className="mt-4 flex flex-col gap-2">
                     <button
@@ -1131,10 +1531,11 @@ export function DispatchWorkstation({
                     value={pasteInput}
                     onChange={(event) => setPasteInput(event.target.value)}
                     rows={4}
+                    aria-label="Load intake request"
                     className="w-full resize-none rounded-lg border border-[color:var(--navpro-border-input)] bg-[color:var(--navpro-bg-input)] px-3 py-3 text-[13px] leading-6 text-[color:var(--navpro-text)] outline-none"
                   />
                   <div className="mt-3 rounded-lg bg-[color:var(--navpro-bg-muted)] px-3 py-2 text-[12px] text-[color:var(--navpro-text-muted)]">
-                    Paste broker email, rate confirmation, or a typed lane request to score the load against the live roster.
+                    Paste broker email, a rate confirmation, or a typed lane request to rank it against the live roster.
                   </div>
                 </section>
 
@@ -1175,40 +1576,53 @@ export function DispatchWorkstation({
                 <section className="space-y-3">
                   <div className="flex items-center justify-between">
                     <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-muted)]">
-                      Ranked match candidates
+                      Driver ranking
                     </div>
                     {scores.length > 0 ? (
                       <div className="text-[12px] font-medium text-[#214cba]">Explainable scoring active</div>
                     ) : null}
                   </div>
 
-                  {topCandidate ? (
+                  {selectedCandidate ? (
                     <section className="rounded-xl border border-[#c7d7ff] bg-white p-4 shadow-[0_4px_16px_rgba(33,76,186,0.08)]">
                       <div className="mb-3 flex items-start justify-between gap-3">
                         <div className="flex items-center gap-3">
-                          <Avatar name={topCandidate.driverName} tone="blue" />
+                          <Avatar name={selectedCandidate.driverName} tone="blue" />
                           <div>
                             <div className="text-base font-bold leading-tight text-[color:var(--navpro-text-strong)]">
-                              {topCandidate.driverName}
+                              {selectedCandidate.driverName}
                             </div>
                             <div className="mt-1 text-xs text-[color:var(--navpro-text-muted)]">
-                              {driverById.get(topCandidate.driverId)?.homeBase.city ?? "Unknown"} • best positioned for pickup
+                              {driverById.get(selectedCandidate.driverId)?.homeBase.city ?? "Unknown"} •{" "}
+                              {selectedCandidate.driverId === topCandidate?.driverId ? "best positioned for pickup" : "selected for review"}
                             </div>
                           </div>
                         </div>
-                        <div className="rounded-full bg-[#214cba] px-2 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-white">
-                          {topCandidate.score}% match
+                        <div className="flex flex-wrap items-center justify-end gap-2">
+                          {selectedCandidate.driverId === topCandidate?.driverId ? (
+                            <div className="rounded-full bg-[#214cba] px-2 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-white">
+                              Recommended
+                            </div>
+                          ) : null}
+                          {selectedCandidateRank ? (
+                            <div className="rounded-full bg-[color:var(--navpro-bg-muted)] px-2 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-[color:var(--navpro-text-muted)]">
+                              Rank {selectedCandidateRank}
+                            </div>
+                          ) : null}
+                          <div className="rounded-full bg-[#214cba] px-2 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-white">
+                            {selectedCandidate.score}% match
+                          </div>
                         </div>
                       </div>
 
                       <div className="grid grid-cols-2 gap-2 rounded-xl bg-[color:var(--navpro-bg-muted)] p-3 xl:grid-cols-5">
                         {(
                           [
-                            { key: "deadhead", label: "Deadhead", value: `${topCandidate.deadheadMiles}mi` },
-                            { key: "hos", label: "HOS", value: `${formatHours(topCandidate.hosCheck.availableMin)} left` },
-                            { key: "fuel", label: "Fuel", value: formatMoney(topCandidate.fuelCostUsd) },
-                            { key: "eta", label: "ETA", value: formatPercent(topCandidate.etaConfidence) },
-                            { key: "ripple", label: "Ripple", value: `${topCandidate.rippleImpact.affectedLoads} loads` }
+                            { key: "deadhead", label: "Deadhead", value: `${selectedCandidate.deadheadMiles}mi` },
+                            { key: "hos", label: "HOS", value: `${formatHours(selectedCandidate.hosCheck.availableMin)} left` },
+                            { key: "fuel", label: "Fuel", value: formatMoney(selectedCandidate.fuelCostUsd) },
+                            { key: "eta", label: "ETA", value: formatPercent(selectedCandidate.etaConfidence) },
+                            { key: "ripple", label: "Ripple", value: `${selectedCandidate.rippleImpact.affectedLoads} loads` }
                           ] as Array<{ key: CandidateMetricKey; label: string; value: string }>
                         ).map((metric) => {
                           const active = metric.key === selectedMetricKey;
@@ -1235,7 +1649,7 @@ export function DispatchWorkstation({
                       </div>
 
                       <div className="mt-3 rounded-lg bg-[#dce1ff]/40 px-3 py-3 text-[12px] leading-6 text-[color:var(--navpro-text-strong)]">
-                        <span className="font-bold">Why this driver?</span> {topCandidate.rationale}
+                        <span className="font-bold">Why this driver?</span> {selectedCandidate.rationale}
                       </div>
 
                       {selectedMetricExplanation ? (
@@ -1247,46 +1661,127 @@ export function DispatchWorkstation({
                         </div>
                       ) : null}
 
+                      <div className="mt-3 grid grid-cols-2 gap-2 text-[12px] xl:grid-cols-4">
+                        <div className="rounded-lg border border-[color:var(--navpro-border-soft)] bg-white px-3 py-3">
+                          <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-subtle)]">Home base</div>
+                          <div className="mt-1 text-sm font-bold text-[color:var(--navpro-text-strong)]">
+                            {driverById.get(selectedCandidate.driverId)?.homeBase.city ?? "Unknown"}
+                          </div>
+                        </div>
+                        <div className="rounded-lg border border-[color:var(--navpro-border-soft)] bg-white px-3 py-3">
+                          <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-subtle)]">HOS cushion</div>
+                          <div className="mt-1 text-sm font-bold text-[color:var(--navpro-text-strong)]">
+                            {formatHours(Math.max(selectedCandidate.hosCheck.availableMin - selectedCandidate.hosCheck.requiredMin, 0))}
+                          </div>
+                        </div>
+                        <div className="rounded-lg border border-[color:var(--navpro-border-soft)] bg-white px-3 py-3">
+                          <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-subtle)]">Compliance</div>
+                          <div className="mt-1 text-sm font-bold text-[color:var(--navpro-text-strong)]">
+                            {driverById.get(selectedCandidate.driverId)?.complianceFlags.length ?? 0} open
+                          </div>
+                        </div>
+                        <div className="rounded-lg border border-[color:var(--navpro-border-soft)] bg-white px-3 py-3">
+                          <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-subtle)]">Current seat</div>
+                          <div className="mt-1 text-sm font-bold text-[color:var(--navpro-text-strong)]">
+                            {driverById.get(selectedCandidate.driverId)?.activeTripId ?? "Dispatchable"}
+                          </div>
+                        </div>
+                      </div>
+
                       <div className="mt-3 flex gap-2">
                         <button
                           type="button"
                           onClick={() => void handleOpenBackhaul()}
-                          disabled={!parsedLoad || isDispatching}
+                          disabled={!parsedLoad || isDispatching || isOpeningBackhaul}
                           className="flex-1 rounded-lg bg-[linear-gradient(135deg,#214cba_0%,#4066d4_100%)] px-4 py-3 text-[12px] font-bold text-white shadow-[0_4px_14px_rgba(33,76,186,0.24)] disabled:opacity-60"
                         >
-                          Dispatch {topCandidate.driverName.split(" ")[0]}
+                          {isOpeningBackhaul ? "Scanning backhauls..." : `Review backhaul for ${selectedCandidate.driverName.split(" ")[0]}`}
                         </button>
                         <button
                           type="button"
-                          onClick={() => void handleDispatch()}
+                          onClick={() => queueDispatchConfirmation("outbound")}
                           disabled={!parsedLoad || isDispatching}
                           className="rounded-lg border border-[color:var(--navpro-border-soft)] bg-white px-4 py-3 text-[12px] font-semibold text-[color:var(--navpro-text-muted)] disabled:opacity-60"
                         >
-                          Outbound
+                          Queue outbound
                         </button>
                       </div>
                     </section>
                   ) : null}
 
-                  {secondaryCandidates.map((score) => (
+                  {pendingDispatchConfirmation && selectedCandidate ? (
+                    <section className="rounded-xl border border-[#c7d7ff] bg-[#f7faff] p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#214cba]">Assignment check</div>
+                          <div className="mt-1 text-sm font-bold text-[color:var(--navpro-text-strong)]">
+                            {pendingDispatchConfirmation.mode === "round_trip" ? "Confirm round-trip assignment" : "Confirm outbound assignment"}
+                          </div>
+                          <div className="mt-1 text-[12px] leading-6 text-[color:var(--navpro-text-muted)]">
+                            {selectedCandidate.driverName} will be assigned to {parsedLoad?.origin.city} → {parsedLoad?.destination.city}
+                            {pendingDispatchConfirmation.mode === "round_trip" && selectedBackhaul
+                              ? ` with return ${selectedBackhaul.returnLoad.origin.city} → ${selectedBackhaul.returnLoad.destination.city}.`
+                              : "."}
+                          </div>
+                        </div>
+                        <div className="rounded-full bg-white px-3 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-[#214cba]">
+                          Final check
+                        </div>
+                      </div>
+                      <div className="mt-4 flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void handleConfirmDispatch()}
+                          disabled={isDispatching}
+                          className="flex-1 rounded-lg bg-[linear-gradient(135deg,#214cba_0%,#4066d4_100%)] px-4 py-3 text-[12px] font-bold text-white shadow-[0_4px_14px_rgba(33,76,186,0.24)] disabled:opacity-60"
+                        >
+                          {isDispatching ? "Assigning..." : pendingDispatchConfirmation.mode === "round_trip" ? "Confirm round-trip" : "Confirm outbound"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setPendingDispatchConfirmation(null)}
+                          className="rounded-lg border border-[color:var(--navpro-border-soft)] bg-white px-4 py-3 text-[12px] font-semibold text-[color:var(--navpro-text-muted)]"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </section>
+                  ) : null}
+
+                  {alternateCandidates.map((score) => (
                     <button
                       key={score.driverId}
                       type="button"
-                      onClick={() => setSelectedDriverId(score.driverId)}
+                      onClick={() => {
+                        setSelectedDriverId(score.driverId);
+                        setPendingDispatchConfirmation(null);
+                      }}
                       className="w-full rounded-xl border border-[color:var(--navpro-border-soft)] bg-white p-4 text-left transition-colors hover:bg-[color:var(--navpro-bg-muted)]"
                     >
                       <div className="flex items-center justify-between gap-3">
                         <div className="flex items-center gap-3">
                           <Avatar name={score.driverName} tone="violet" />
                           <div>
-                            <div className="text-sm font-bold text-[color:var(--navpro-text-strong)]">{score.driverName}</div>
+                            <div className="flex items-center gap-2">
+                              <div className="text-sm font-bold text-[color:var(--navpro-text-strong)]">{score.driverName}</div>
+                              {score.driverId === topCandidate?.driverId ? (
+                                <div className="rounded-full bg-[#E7F0FF] px-2 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-[#214cba]">
+                                  Recommended
+                                </div>
+                              ) : null}
+                            </div>
                             <div className="mt-1 text-xs text-[color:var(--navpro-text-muted)]">
-                              deadhead {score.deadheadMiles}mi • HOS {formatHours(score.hosCheck.availableMin)}
+                              deadhead {score.deadheadMiles}mi • HOS {formatHours(score.hosCheck.availableMin)} • ripple {score.rippleImpact.affectedLoads} loads
                             </div>
                           </div>
                         </div>
-                        <div className="rounded-sm bg-[color:var(--navpro-bg-muted)] px-2 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-[color:var(--navpro-text-muted)]">
-                          {score.score}% match
+                        <div className="text-right">
+                          <div className="rounded-sm bg-[color:var(--navpro-bg-muted)] px-2 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-[color:var(--navpro-text-muted)]">
+                            {score.score}% match
+                          </div>
+                          <div className="mt-1 text-[11px] text-[color:var(--navpro-text-subtle)]">
+                            Rank {scores.findIndex((item) => item.driverId === score.driverId) + 1}
+                          </div>
                         </div>
                       </div>
                     </button>
@@ -1436,7 +1931,7 @@ export function DispatchWorkstation({
                   <div className="mb-2 flex items-center justify-between gap-3">
                     <div className="flex items-center gap-2 text-[12px] font-semibold uppercase tracking-[0.08em] text-[#BA1A1A]">
                       <Glyph name="warning" className="h-4 w-4" />
-                      Live intervention
+                      Live alert
                     </div>
                     <button
                       type="button"
@@ -1453,17 +1948,59 @@ export function DispatchWorkstation({
                 </section>
 
                 <section className="rounded-xl border border-[color:var(--navpro-border-soft)] bg-[color:var(--navpro-bg-muted)] p-5">
-                  <div className="mb-3 text-[11px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-muted)]">
-                    Proposed action plan
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[color:var(--navpro-text-muted)]">
+                      Action desk
+                    </div>
+                    {openDraft ? (
+                      <div className="rounded-full bg-white px-3 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-[#214cba]">
+                        Execute / Edit / Dismiss
+                      </div>
+                    ) : null}
                   </div>
                   {openDraft ? (
                     <div className="space-y-4">
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void handleExecuteIntervention(openDraft.id)}
+                          disabled={isExecuting}
+                          className="rounded-lg bg-[linear-gradient(135deg,#214cba_0%,#4066d4_100%)] px-4 py-2.5 text-[12px] font-semibold text-white shadow-[0_4px_12px_rgba(33,76,186,0.2)] disabled:opacity-60"
+                        >
+                          {isExecuting ? "Executing..." : "Execute now"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => (isEditingDraft ? handleSaveDraftEdit() : handleStartDraftEdit())}
+                          className="rounded-lg border border-[color:var(--navpro-border-soft)] bg-white px-4 py-2.5 text-[12px] font-semibold text-[color:var(--navpro-text-muted)]"
+                        >
+                          {isEditingDraft ? "Save edit" : "Edit draft"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDismissDraft(openDraft.id)}
+                          className="rounded-lg border border-[#ffd9d6] bg-white px-4 py-2.5 text-[12px] font-semibold text-[#BA1A1A]"
+                        >
+                          Dismiss
+                        </button>
+                      </div>
+
                       <div className="rounded-xl bg-white p-4 shadow-[0_4px_12px_rgba(21,27,41,0.03)]">
                         <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-[color:var(--navpro-text-strong)]">
                           <Glyph name="voice" className="h-4 w-4 text-[#214cba]" />
                           Voice script
                         </div>
-                        <div className="text-[12px] leading-6 text-[color:var(--navpro-text-muted)]">{openDraft.voiceScript}</div>
+                        {isEditingDraft ? (
+                          <textarea
+                            value={draftEditor.voiceScript}
+                            onChange={(event) => setDraftEditor((current) => ({ ...current, voiceScript: event.target.value }))}
+                            rows={4}
+                            aria-label="Edit voice script"
+                            className="w-full resize-none rounded-lg border border-[color:var(--navpro-border-input)] bg-[color:var(--navpro-bg-input)] px-3 py-3 text-[12px] leading-6 text-[color:var(--navpro-text)] outline-none"
+                          />
+                        ) : (
+                          <div className="text-[12px] leading-6 text-[color:var(--navpro-text-muted)]">{openDraft.voiceScript}</div>
+                        )}
                         {openDraft.audioSource ? (
                           <div className="mt-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-[#214cba]">
                             Audio source: {openDraft.audioSource}
@@ -1492,10 +2029,44 @@ export function DispatchWorkstation({
                       </div>
                       <div className="rounded-xl bg-white p-4 shadow-[0_4px_12px_rgba(21,27,41,0.03)]">
                         <div className="mb-2 text-sm font-semibold text-[color:var(--navpro-text-strong)]">Drafted SMS to customer</div>
-                        <div className="rounded-lg bg-[color:var(--navpro-bg-muted)] px-3 py-3 text-[12px] italic leading-6 text-[color:var(--navpro-text-muted)]">
-                          “{openDraft.customerSms}”
-                        </div>
+                        {isEditingDraft ? (
+                          <textarea
+                            value={draftEditor.customerSms}
+                            onChange={(event) => setDraftEditor((current) => ({ ...current, customerSms: event.target.value }))}
+                            rows={4}
+                            aria-label="Edit customer SMS"
+                            className="w-full resize-none rounded-lg border border-[color:var(--navpro-border-input)] bg-[color:var(--navpro-bg-input)] px-3 py-3 text-[12px] leading-6 text-[color:var(--navpro-text)] outline-none"
+                          />
+                        ) : (
+                          <div className="rounded-lg bg-[color:var(--navpro-bg-muted)] px-3 py-3 text-[12px] italic leading-6 text-[color:var(--navpro-text-muted)]">
+                            “{openDraft.customerSms}”
+                          </div>
+                        )}
                       </div>
+                      {isEditingDraft ? (
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleSaveDraftEdit()}
+                            className="rounded-lg bg-[linear-gradient(135deg,#214cba_0%,#4066d4_100%)] px-4 py-2.5 text-[12px] font-semibold text-white shadow-[0_4px_12px_rgba(33,76,186,0.2)]"
+                          >
+                            Save draft
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setIsEditingDraft(false);
+                              setDraftEditor({
+                                voiceScript: openDraft.voiceScript,
+                                customerSms: openDraft.customerSms
+                              });
+                            }}
+                            className="rounded-lg border border-[color:var(--navpro-border-soft)] bg-white px-4 py-2.5 text-[12px] font-semibold text-[color:var(--navpro-text-muted)]"
+                          >
+                            Cancel edit
+                          </button>
+                        </div>
+                      ) : null}
                     </div>
                   ) : (
                     <div className="text-[12px] text-[color:var(--navpro-text-muted)]">No intervention drafts are open.</div>
@@ -1529,7 +2100,7 @@ export function DispatchWorkstation({
                       disabled={!openDraft || isExecuting}
                       className="rounded-lg border border-[color:var(--navpro-border-soft)] bg-white px-4 py-2 text-[12px] font-semibold text-[color:var(--navpro-text-muted)] disabled:opacity-60"
                     >
-                      {isExecuting ? "Executing..." : "Approve manually"}
+                      {isExecuting ? "Executing..." : "Execute from drawer"}
                     </button>
                   </div>
                 </section>
@@ -1669,11 +2240,11 @@ export function DispatchWorkstation({
             </div>
           ) : null}
 
-          {activeStage === "load_assignment" && topCandidate ? (
+          {activeStage === "load_assignment" && selectedCandidate ? (
             <div className="pointer-events-none absolute left-[28%] top-[52%] z-20 -translate-x-1/2 -translate-y-1/2">
               <div className="glass-panel rounded-lg border border-white/60 px-3 py-2 text-center shadow-[0_8px_32px_rgba(21,27,41,0.12)]">
                 <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-[#214cba]">Selected match</div>
-                <div className="mt-1 text-sm font-bold text-[color:var(--navpro-text-strong)]">{topCandidate.driverName}</div>
+                <div className="mt-1 text-sm font-bold text-[color:var(--navpro-text-strong)]">{selectedCandidate.driverName}</div>
               </div>
             </div>
           ) : null}
@@ -1720,7 +2291,7 @@ export function DispatchWorkstation({
                     onClick={() => setActiveStage("trip_monitoring")}
                     className="rounded-lg border border-[color:var(--navpro-border-soft)] bg-white px-3 py-2 text-[12px] font-semibold text-[color:var(--navpro-text-muted)]"
                   >
-                    Open drawer
+                    Open action desk
                   </button>
                 </div>
               </div>
@@ -1819,7 +2390,10 @@ export function DispatchWorkstation({
                         <button
                           key={option.returnLoad.loadId}
                           type="button"
-                          onClick={() => setSelectedReturnLoadId(option.returnLoad.loadId)}
+                          onClick={() => {
+                            setSelectedReturnLoadId(option.returnLoad.loadId);
+                            setPendingDispatchConfirmation(null);
+                          }}
                           className={[
                             "w-full rounded-lg border px-3 py-3 text-left transition-colors",
                             isActive
@@ -1847,19 +2421,23 @@ export function DispatchWorkstation({
                 <div className="mt-5 flex gap-2">
                   <button
                     type="button"
-                    onClick={() => void handleDispatch(selectedBackhaul.returnLoad.loadId)}
+                    onClick={() => queueDispatchConfirmation("round_trip", selectedBackhaul.returnLoad.loadId)}
                     disabled={isDispatching}
                     className="flex-1 rounded-lg bg-[linear-gradient(135deg,#214cba_0%,#4066d4_100%)] px-4 py-3 text-[12px] font-bold text-white shadow-[0_4px_14px_rgba(33,76,186,0.24)] disabled:opacity-60"
                   >
-                    {isDispatching ? "Dispatching..." : "Book full round-trip"}
+                    {pendingDispatchConfirmation?.mode === "round_trip" ? "Round-trip ready to confirm" : "Stage round-trip"}
                   </button>
                   <button
                     type="button"
-                    onClick={() => void handleDispatch()}
+                    onClick={() => {
+                      setBackhaulOpen(false);
+                      setPendingDispatchConfirmation(null);
+                      setAssignmentFeedback("Backhaul review closed. Outbound assignment is still available from the dispatch desk.");
+                    }}
                     disabled={isDispatching}
                     className="rounded-lg border border-[color:var(--navpro-border-soft)] bg-white px-4 py-3 text-[12px] font-semibold text-[color:var(--navpro-text-muted)] disabled:opacity-60"
                   >
-                    Decline
+                    Close review
                   </button>
                 </div>
               </div>
